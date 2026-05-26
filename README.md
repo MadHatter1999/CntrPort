@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/MadHatter1999/CntrPort/refs/heads/main/cntrport_icon_transparent_bg.png" alt="CntrPort" width="220">
+</p>
+
 # Counterpoint API Wrapper Framework
 
 A Flask wrapper around the NCR Counterpoint REST API. Every endpoint in the
@@ -141,12 +145,11 @@ counterpoint-order-entry/
   README.md             # This file
 ```
 
-`__CntrPHooks__.py` ships as a heavily-commented starter with copy-paste
-templates for every hook type. Edit it in place - there's no other wiring
-to do. If you delete it, the framework still runs (just without custom
-hooks).
+`__CntrPHooks__.py` ships as a starter with commented templates for each
+hook type. Edit it in place, no other wiring. Delete it and the wrapper
+still runs (just without custom hooks).
 
-Optional convention if your extensions outgrow one file:
+If your extensions outgrow one file, a common convention is:
 
 ```
   extensions/           # Your custom Flask routes (SQL-backed, etc.)
@@ -228,52 +231,43 @@ PATCH /Customer/12345                       ── same as PATCH /api/cp/Custome
 DELETE /Customer/12345/Address              ── same as DELETE /api/cp/Customer/12345/Address
 ```
 
-Auth is identical to NCR's: HTTP Basic + APIKey header - but the wrapper
-**injects** both from `.env` so the caller doesn't need to send them.
+Auth matches NCR's (HTTP Basic + APIKey header), but the wrapper injects
+both from `.env`, so callers don't need to send them.
 
-Unregistered paths (anything not in `cp_endpoints.ENDPOINTS`) still work
-through the generic mirror at `/api/cp/<path>` so new NCR endpoints are
-reachable before the registry is updated. See
-[Generic mirror](#generic-mirror-forward-compatibility) below.
+Anything not in `cp_endpoints.ENDPOINTS` still works through the generic
+mirror at `/api/cp/<path>`, so new NCR endpoints are reachable before the
+registry catches up. See [Generic mirror](#generic-mirror-forward-compatibility).
 
 ---
 
 ## Direct mode (per-request hook bypass)
 
-Sometimes a caller doesn't want the wrapper's hook pipeline running on its
-request - usually because:
+Sometimes a caller doesn't want hooks running on a particular request. A
+redact hook might be hiding fields they're trying to debug. An ops
+dashboard might want to compare wrapper output against raw upstream. Maybe
+they just want NCR's exact response shape.
 
-- A redact / normalize hook is hiding fields the caller needs for debugging.
-- The caller expects NCR's exact response shape, not a transformed one.
-- An ops dashboard wants to compare wrapper output vs raw upstream.
-
-**Direct mode** is the per-request escape hatch. The caller opts in:
+Direct mode is the escape hatch. The caller opts in two ways:
 
 | Mechanism | Value |
 | --------- | ----- |
-| Query parameter | `?_direct=1` (also accepts `true` / `yes` / `on`) |
+| Query parameter | `?_direct=1` (also `true` / `yes` / `on`) |
 | Request header  | `X-CntrP-Mode: direct` |
 
-Either one triggers it. The `_direct` query param is stripped before
-forwarding upstream, so NCR never sees it.
+Either works. The `_direct` query param is stripped before forwarding so
+NCR never sees it.
 
-**When honored** (i.e. `CP_ALLOW_DIRECT_MODE=true`):
+With `CP_ALLOW_DIRECT_MODE=true` in `.env`, an opt-in request skips all
+pre/during/post hooks. The wrapper forwards method, query, body, and
+content-type to NCR and returns the upstream response unmodified. The
+response includes an `X-CntrP-Mode: direct` header so callers can confirm
+they got the raw shape.
 
-- All pre / during / post hooks are skipped for this request.
-- The wrapper forwards method, query, body, and content-type to NCR.
-- The upstream response is returned unmodified.
-- The response carries `X-CntrP-Mode: direct` so callers can verify they
-  got the raw shape.
-
-**When ignored** (default, `CP_ALLOW_DIRECT_MODE=false`):
-
-- The flag is silently ignored.
-- The normal hooked response is returned.
-- No `X-CntrP-Mode` header is set.
-
-This default keeps compliance / redact hooks from being trivially bypassed
-in production. Enable direct mode in dev / staging by setting
-`CP_ALLOW_DIRECT_MODE=true` in `.env`.
+With `CP_ALLOW_DIRECT_MODE=false` (the default), the opt-in flag is
+silently ignored, the normal hooked response is returned, and no
+`X-CntrP-Mode` header appears. That default stops anyone from trivially
+bypassing a compliance hook in production. Enable it in dev/staging when
+you actually want the escape hatch.
 
 ### Examples
 
@@ -296,10 +290,10 @@ curl -X POST 'http://localhost:5000/Document?_direct=1' \
 
 ### Equivalent: the generic mirror
 
-`/api/cp/<path>` is also hook-less (the mirror has no registry binding).
-Direct mode exists so callers can use the **typed route's URL** (the one
-they already use) and just add a flag, rather than rewriting the URL to
-the mirror's prefix. The behavior is the same.
+`/api/cp/<path>` is also hook-less, since the mirror has no registry
+binding. Direct mode is mostly a convenience so callers can stick with the
+URL they already use and add a flag, instead of rewriting to the mirror
+prefix. Same outcome either way.
 
 ### Checking whether it's enabled
 
@@ -318,18 +312,18 @@ the mirror's prefix. The behavior is the same.
 
 ## Endpoint registry
 
-The registry is the source of truth for which Counterpoint endpoints we
-expose as typed routes. Each entry has:
+The registry in [cp_endpoints.py](cp_endpoints.py) lists every Counterpoint
+endpoint the wrapper exposes as a typed route. Each row carries:
 
-- **method** - `GET` / `POST` / `PUT` / `PATCH` / `DELETE`
-- **guide_path** - the path NCR documents, e.g. `/Customer/{CustNo}/Address`
-- **name** - a stable identifier you target when registering hooks (never
-  changes even if NCR renames the path)
-- **description** - human-readable summary
-- **requires_api_key** - does NCR require the APIKey header on this endpoint
-- **requires_cp_registration** - does the company need to be registered with CP
+- `method` — GET / POST / PUT / PATCH / DELETE
+- `guide_path` — the path NCR documents, e.g. `/Customer/{CustNo}/Address`
+- `name` — stable identifier hooks attach to; doesn't change if NCR
+  renames the path
+- `description` — what it does in one line
+- `requires_api_key` — whether NCR demands the APIKey header here
+- `requires_cp_registration` — whether the company has to be CP-registered
 
-Edit [cp_endpoints.py](cp_endpoints.py) to add or remove entries.
+Add or remove entries by editing the list.
 
 ### System Administration
 
@@ -455,11 +449,11 @@ Edit [cp_endpoints.py](cp_endpoints.py) to add or remove entries.
 
 Three hook points fire on every request to a registered endpoint:
 
-| Hook    | When it runs                          | Can do                                              |
-| ------- | ------------------------------------- | --------------------------------------------------- |
-| `pre`   | Before the upstream call              | Mutate request body / query / headers / path params. Set `ctx["skip_upstream"] = True` to short-circuit. Multiple pre-hooks run in registration order. |
-| `during`| Replaces the default upstream call    | Talk to a different backend, return canned data, hit a cache. **At most one** `during` hook per endpoint. |
-| `post`  | After the upstream call (or `during`) | Mutate response body / status / headers / content type. Multiple post-hooks run in registration order. |
+| Hook    | When                                 | What you can do |
+| ------- | ------------------------------------ | --------------- |
+| `pre`   | Before the upstream call             | Mutate request body, query, headers, or path params. Set `ctx["skip_upstream"] = True` to short-circuit. Multiple pre-hooks allowed; they run in registration order. |
+| `during`| Replaces the upstream call           | Talk to a different backend, return canned data, hit a cache. One per endpoint. |
+| `post`  | After the upstream call (or during)  | Mutate response body, status, headers, content-type. Multiple allowed; registration order. |
 
 ### The context dict
 
@@ -494,13 +488,12 @@ ctx = {
 ### Registering hooks
 
 Open [__CntrPHooks__.py](__CntrPHooks__.py) and write your hooks. That's it.
-`app.py` auto-discovers the file at startup using `importlib.util.find_spec`
-and imports it for its side effects - every `@cp_endpoints.pre/during/post`
-decorator runs at import and registers itself against the registry.
+`app.py` looks for the file at startup with `importlib.util.find_spec` and
+imports it. The `@cp_endpoints.pre/during/post` decorators register
+themselves on import.
 
-The file ships as a heavily-commented starter with copy-paste templates for
-every hook type. Uncomment / modify the templates, or delete them and write
-your own.
+The file ships with commented templates for each hook type. Uncomment and
+tweak them, or delete them and write your own.
 
 ```python
 # __CntrPHooks__.py
@@ -520,30 +513,29 @@ def redact_credit_limit(ctx):
         body.pop("AR_CRD_LIM", None)
 ```
 
-Restart the Flask process to pick up changes (Flask's debug reloader does
-this for you in dev). The startup log line tells you which path won:
+Restart Flask to pick up changes (the debug reloader handles this in dev).
+The startup log shows which branch fired:
 
 ```
 INFO Loaded hooks from __CntrPHooks__.py
 ```
 
-or, if the file is missing:
+or:
 
 ```
-INFO No __CntrPHooks__.py found - running without custom hooks.
+INFO No __CntrPHooks__.py found, running without custom hooks.
 ```
 
-Hooks attach to the **registry name** (the third column in the tables
-above), not the path. Renaming a guide path in NCR's docs has no effect on
-your hooks. The dunder-style filename is a convention - it makes the hooks
-module easy to spot in the file tree and signals "framework wiring" rather
-than "ordinary module".
+Hooks attach to the registry name (third column in the tables above), not
+the path. If NCR renames `/Customer/{CustNo}` tomorrow, your hooks keep
+working. The dunder-style filename is just a convention; it stands out in
+the file tree and signals "framework wiring" rather than ordinary module.
 
 ---
 
 ## Extension recipes
 
-### 1. Add a default field to every order
+#### Stamp a default field on every order
 
 ```python
 @cp_endpoints.pre("post_document")
@@ -553,7 +545,7 @@ def force_store_id(ctx):
     ctx["request_body"] = body
 ```
 
-### 2. Strip sensitive fields before returning
+#### Drop sensitive fields before returning
 
 ```python
 @cp_endpoints.post("get_customer")
@@ -564,7 +556,7 @@ def redact(ctx):
             body.pop(k, None)
 ```
 
-### 3. Short-circuit on bad input
+#### Reject bad input before we hit NCR
 
 ```python
 @cp_endpoints.pre("get_item")
@@ -575,7 +567,7 @@ def reject_blank_item(ctx):
         ctx["response_body"] = {"ok": False, "message": "ItemNo required."}
 ```
 
-### 4. Cache an idempotent GET in memory
+#### In-memory TTL cache for an idempotent GET
 
 ```python
 import time
@@ -598,7 +590,7 @@ def cache_store(ctx):
         _cache[key] = (time.time(), ctx["response_body"])
 ```
 
-### 5. Replace the upstream call with a stub (staging)
+#### Stub the upstream call in staging
 
 ```python
 @cp_endpoints.during("get_system_info")
@@ -607,7 +599,7 @@ def stub_system_info(ctx):
     ctx["upstream_body"] = {"stub": True, "env": "staging"}
 ```
 
-### 6. Log every write
+#### Audit every write
 
 ```python
 import logging
@@ -617,37 +609,34 @@ for name in ("post_document", "post_customer", "patch_customer",
              "delete_customer_address", "post_document_payments"):
     @cp_endpoints.post(name)
     def _audit(ctx, _name=name):
-        log.info(
-            "%s %s -> %s",
-            ctx["method"], ctx["guide_path"], ctx["response_status"],
-        )
+        log.info("%s %s -> %s",
+                 ctx["method"], ctx["guide_path"], ctx["response_status"])
 ```
 
-### 7. Add a brand-new typed Flask route
+#### Add a brand-new typed Flask route
 
-A registry-driven route always wins over the generic mirror because it's
-more specific. Anything you declare with `@app.route` directly wins over a
-registry route at the same path because Flask matches static rules first.
+Registry routes beat the generic mirror because they're more specific. A
+hand-written `@app.route` at a *more specific* path wins over a registry
+route. Same-path overrides need the override pattern below.
 
 ```python
-# In app.py or any module imported by app.py:
 @app.get("/api/sql/my-report")
 def my_report():
-    # ... do whatever, including using get_sql_connection() ...
+    # do whatever, including using get_sql_connection()
     return jsonify({"rows": [...]})
 
 @app.get("/api/cp/Items/<loc_id>")
 def my_items(loc_id):
-    # Overrides the registry route for /Items/{LocId}. The registry's
-    # hook chain is bypassed for this path - your code is in charge.
+    # Overrides the registry route for /Items/{LocId}. Hooks are skipped
+    # for this path; your code is in charge end to end.
     ...
 ```
 
-### 8. Override a registry endpoint with full custom logic
+#### Replace a registry endpoint entirely
 
-If you need to replace the *entire* behavior of a single endpoint (not just
-hook into it), use a `during` hook - it bypasses the upstream call but
-still runs your pre/post hooks for that endpoint.
+If you want to swap out the full behavior of one endpoint (not just hook
+into it), use a `during` hook. It bypasses the upstream HTTP call but
+keeps your pre/post hooks for that endpoint.
 
 ```python
 @cp_endpoints.during("get_inventory_locations")
@@ -663,9 +652,9 @@ def from_warehouse_service(ctx):
 
 ## Built-in SQL extensions
 
-Framework examples of SQL-backed routes that add value on top of NCR's API.
-Useful out of the box; remove or replace freely. All queries are
-parameterized and read-only.
+SQL-backed routes shipped as examples. They're useful out of the box, but
+nothing in the framework depends on them, so rip them out or replace them.
+Every query is parameterized and read-only.
 
 | Method | Path                                             | Query params                                            |
 | ------ | ------------------------------------------------ | ------------------------------------------------------- |
@@ -676,30 +665,28 @@ parameterized and read-only.
 | GET    | `/api/sql/categories`                            | -                                                       |
 | GET    | `/api/sql/subcategories`                         | `category`                                              |
 
-The kit-components route probes a list of known Counterpoint kit-component
-tables (`IM_PRC_KIT_COMP`, `IM_KIT_COMP`, `IM_KIT_COMPONENT`, `IM_KIT_DTL`,
-`IM_KIT`, `IM_BOM`, `IM_BOM_COMP`) and returns diagnostics when none of them
-exist on the install. Adjust the probe list in `_KIT_COMPONENT_TABLE_GUESSES`
-in [app.py](app.py) to match your install.
+The kit-components route walks a list of likely Counterpoint kit tables
+(`IM_PRC_KIT_COMP`, `IM_KIT_COMP`, `IM_KIT_COMPONENT`, `IM_KIT_DTL`,
+`IM_KIT`, `IM_BOM`, `IM_BOM_COMP`) and falls back to a diagnostic dump if
+none exist. Adjust `_KIT_COMPONENT_TABLE_GUESSES` in [app.py](app.py) for
+your install.
 
 ---
 
 ## SQL helper utilities
 
-If you're building your own SQL-backed extensions, these helpers live in
-[app.py](app.py):
+Building your own SQL-backed extension? The helpers in [app.py](app.py):
 
-| Helper                                  | Purpose                                                                                |
-| --------------------------------------- | -------------------------------------------------------------------------------------- |
-| `get_sql_connection() -> Connection`    | Opens a pyodbc connection from `.env` config. Caller closes it (use `with`).           |
-| `get_existing_columns(table) -> set`    | Returns the column names present in a table. Cached per process. Lets you write        |
-|                                         | schema-tolerant SELECTs against Counterpoint versions where columns drift.             |
-| `_safe_select(table, wanted) -> list`   | Intersects `wanted` with the columns that actually exist on `table`.                   |
-| `_jsonable(val) -> Any`                 | Converts a SQL value (Decimal, bytes) to something `jsonify` can serialize.            |
-| `_row_to_dict(cursor, row) -> dict`     | Turns a pyodbc row into `{column_name: jsonable_value, ...}`.                          |
-| `_sql_error(message, exc)`              | Returns a `(jsonify, 500)` tuple, logged with a warning. Use as the `except` return.   |
+| Helper                                  | What it does                                                                          |
+| --------------------------------------- | ------------------------------------------------------------------------------------- |
+| `get_sql_connection() -> Connection`    | Opens a pyodbc connection from `.env`. Use `with`.                                    |
+| `get_existing_columns(table) -> set`    | Column names that actually exist on `table`. Cached per process; survives schema drift between CP versions. |
+| `_safe_select(table, wanted) -> list`   | Intersects `wanted` with the columns that exist on `table`.                           |
+| `_jsonable(val) -> Any`                 | Turns Decimal / bytes into something `jsonify` accepts.                               |
+| `_row_to_dict(cursor, row) -> dict`     | pyodbc row → `{column: value, ...}` dict.                                             |
+| `_sql_error(message, exc)`              | Logs a warning and returns `(jsonify, 500)`. Use it as the `except` return value.     |
 
-Example custom extension:
+Example:
 
 ```python
 from app import app, get_sql_connection, _row_to_dict, _sql_error
@@ -726,23 +713,21 @@ def customers_by_zip():
 
 ## Generic mirror (forward compatibility)
 
-Any Counterpoint endpoint **not** in the registry is still reachable via:
+Any Counterpoint endpoint not in the registry is still reachable at:
 
 ```
 <METHOD> /api/cp/<guide path>
 ```
 
 The mirror forwards method, query string, headers, and body bytes
-transparently. Auth is injected the same way as for registered routes.
+transparently. Auth is injected the same way as on registered routes.
 
-Use this to:
+Use it to hit a new NCR endpoint before the registry catches up, to test
+an endpoint shape before wiring it in, or to forward an oddball
+content-type the typed dispatcher might mangle.
 
-- Hit a new NCR endpoint before the registry has caught up.
-- Test an endpoint shape before wiring it into the registry.
-- Forward an exotic content-type the typed dispatcher might mangle.
-
-There are **no hooks** on mirror requests - that's the whole point of the
-registry. If you need hooks for a path, add it to `cp_endpoints.ENDPOINTS`.
+Mirror requests don't run hooks. If you want hooks for a path, add the row
+to `cp_endpoints.ENDPOINTS` and the typed dispatcher takes over.
 
 ---
 
@@ -778,8 +763,8 @@ registry. If you need hooks for a path, add it to `cp_endpoints.ENDPOINTS`.
 }
 ```
 
-The `has_*_hooks` flags tell you at a glance which endpoints have been
-extended. Useful for ops dashboards and integration smoke tests.
+The `has_*_hooks` flags let you see which endpoints have been extended.
+Handy for ops dashboards and integration smoke tests.
 
 ---
 
@@ -796,31 +781,36 @@ extended. Useful for ops dashboards and integration smoke tests.
 }
 ```
 
-A 401 from the CP API still flips `ok=true` - it proves the service
-answered. Only transport errors (timeout, refused, DNS) flip it false.
+A 401 from CP still flips `ok=true`; the service answered, that's the
+point. Only transport errors (timeout, refused, DNS) flip it false.
 
 ---
 
 ## Security model
 
-- **Secrets**: live only in `.env`. `.gitignore` excludes `.env` (and most
-  variants) so they can't be committed by accident. `.env.example` is the
-  only env file checked in.
-- **No secrets in responses**: `/api/health` and `/api/cp` return only
-  non-sensitive status. Logs do not include passwords or API keys.
-- **No write SQL**: there is no SQL write endpoint and no generic SQL
-  endpoint. All shipped queries are parameterized and read-only. If you add
-  SQL extensions, follow the same rule - use the Counterpoint API for
-  mutations so triggers and replication paths stay intact.
-- **Network exposure**: this wrapper has no authentication of its own. Bind
-  it to localhost (or an internal network) and put it behind whatever auth
-  layer your integrations already use. The threat model assumes anyone who
-  can reach this port can use the Counterpoint API with the configured creds.
-- **Rotate `sa`**: in any non-development environment, replace the SQL `sa`
-  account with a dedicated read-only login that has `SELECT` only on the
-  tables your extensions touch.
-- **TLS to Counterpoint**: `CP_API_VERIFY_SSL=true` is the default. Only
-  disable it for local development against self-signed certs.
+Secrets live only in `.env`. `.gitignore` excludes `.env` and its common
+variants so they can't be committed by accident. `.env.example` is the
+only env file checked in.
+
+`/api/health` and `/api/cp` only ever return non-sensitive status. Logs
+never include passwords or API keys.
+
+There's no SQL write endpoint, and no generic SQL endpoint. Shipped
+queries are parameterized and read-only. When you add SQL extensions,
+keep the same rule: writes go through the Counterpoint API so triggers
+and replication paths stay intact.
+
+The wrapper has no authentication of its own. Bind it to localhost or an
+internal network and put it behind whatever auth layer your integrations
+already use. Treat the threat model as: anyone who can reach this port
+can use the Counterpoint API with the configured creds.
+
+In anything non-dev, replace the SQL `sa` account with a dedicated
+read-only login that has `SELECT` only on the tables your extensions
+touch.
+
+`CP_API_VERIFY_SSL=true` is the default. Only disable it against
+self-signed certs in development.
 
 ---
 
@@ -846,63 +836,58 @@ CP_API_VERIFY_SSL=false
 The wrapper silences the resulting urllib3 warning. Re-enable verification
 in production by installing a trusted certificate.
 
-### Health bar shows CP API down
+### Health says CP API is down
 
-- Confirm `CP_API_BASE_URL` matches the running service (default port 52000).
-- Confirm the Windows service `Counterpoint API` (or equivalent) is running.
-- Check the firewall on the server.
-- A 401 response still flips the pill green - it proves the service is
-  reachable. The pill goes red only on transport errors.
+Check `CP_API_BASE_URL` against the running service (default port 52000),
+the Windows service `Counterpoint API` (or whatever yours is called), and
+firewall rules. A 401 isn't down — the pill stays green on any HTTP
+response. Red only fires on transport errors.
 
-### Health bar shows SQL down
+### Health says SQL is down
 
-- Confirm `CP_SQL_SERVER`, `CP_SQL_DATABASE`, and credentials.
-- If using a named instance, set `CP_SQL_SERVER=.\SQLEXPRESS` or
-  `HOSTNAME\INSTANCE`.
-- For Azure / managed SQL, you may also need `Encrypt=yes` - tweak the
-  connection string in `get_sql_connection()`.
+Recheck `CP_SQL_SERVER`, `CP_SQL_DATABASE`, and credentials. Named
+instance? Use `CP_SQL_SERVER=.\SQLEXPRESS` or `HOSTNAME\INSTANCE`. For
+Azure / managed SQL you may need `Encrypt=yes` in `get_sql_connection()`.
 
 ### A registered route returns 405 Method Not Allowed
 
-Flask is returning 405 because the method isn't in the registry for that
-path. Check `cp_endpoints.ENDPOINTS` for the path - methods are
-registered per row. Adding a method means adding a tuple with the same
-`guide_path` and a different `method`.
+The path is registered but not for that method. Look at the rows for that
+`guide_path` in `cp_endpoints.ENDPOINTS`. To add a method, drop in another
+tuple with the same `guide_path` and the new `method`.
 
 ### My hook never runs
 
-- Confirm the registry name in your decorator matches a row's third column
-  exactly. Typos raise `KeyError: Unknown endpoint name`.
-- Confirm your hook module is imported by `app.py` (the side-effect import).
-  Hooks register on import - if Python never runs the file, the decorators
-  never fire.
-- Confirm Flask isn't routing to the generic mirror. Mirror paths have no
-  hooks. Hit `/api/cp` and check `has_pre_hooks` / `has_during_hook` /
-  `has_post_hooks` for the endpoint.
+Three things to check. First, the registry name in your decorator has to
+match the third column of a row exactly. Typos raise
+`KeyError: Unknown endpoint name` at import. Second, `app.py` has to
+actually import your hook module. Hooks register on import; if Python
+never runs the file, the decorators never fire. Third, make sure Flask
+isn't routing to the generic mirror instead — mirror paths skip hooks. Hit
+`/api/cp` and look at `has_pre_hooks` / `has_during_hook` /
+`has_post_hooks` for the endpoint you care about.
 
 ### `during`-hook collision
 
-Only one `during` hook is allowed per endpoint. Registering a second one
-raises `RuntimeError: during-hook already registered`. Call
-`cp_endpoints.clear_hooks("name")` first if you need to replace one (tests
-typically do this).
+One `during` hook per endpoint, period. The second one raises
+`RuntimeError: during-hook already registered`. If you need to replace
+one (tests usually do), call `cp_endpoints.clear_hooks("name")` first.
 
 ### A new NCR endpoint isn't in the registry yet
 
-Use the generic mirror - `<METHOD> /api/cp/<NewPath>` - until you add a
-row to `cp_endpoints.ENDPOINTS`. The mirror has no hooks but it forwards
-correctly.
+Hit it through the mirror at `<METHOD> /api/cp/<NewPath>` until you add a
+row to `cp_endpoints.ENDPOINTS`. No hooks there, but it forwards fine.
 
 ---
 
 ## Out of scope
 
-By design, this framework does **not** provide:
+Things the framework deliberately doesn't do:
 
-- User authentication / login (use a reverse proxy)
-- A UI (callers bring their own - POS, eCom, integration code)
-- Payments / PCI cardholder data (`/NSPTransaction` forwards to NCR's
-  Monetra path; payments live there)
-- A generic SQL endpoint (read-only catalog lookups are the limit)
-- Multi-tenant isolation (one `.env` -> one Counterpoint company)
-- Schema migrations against Counterpoint tables (writes only via the API)
+- User authentication or login (put a reverse proxy in front).
+- UI. Callers bring their own (POS, eCom, integration code).
+- Payments or PCI cardholder data. `/NSPTransaction` forwards to NCR's
+  Monetra path; payments live there, not here.
+- Generic SQL. Read-only catalog lookups are as far as it goes.
+- Multi-tenant isolation. One `.env`, one Counterpoint company.
+- Schema migrations against Counterpoint tables. Writes go through the
+  Counterpoint API, never SQL.
