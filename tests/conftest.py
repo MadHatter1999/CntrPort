@@ -2,8 +2,8 @@
 Pytest fixtures for CntrPort wrapper integration tests.
 
 These tests hit a *running* Flask wrapper (default http://localhost:5000)
-and forward to the configured Counterpoint API. They are read-only —
-GETs only, never POST/PUT/PATCH/DELETE — so they are safe to run against
+and forward to the configured Counterpoint API. They are read-only -
+GETs only, never POST/PUT/PATCH/DELETE - so they are safe to run against
 a real install (e.g. BishopsCellar) without touching data.
 
 Configuration (env vars, also picked up from .env):
@@ -104,7 +104,7 @@ def config() -> dict[str, Any]:
 def pytest_report_header(config: pytest.Config) -> list[str]:
     """Surface the loaded test config at the top of the pytest output so
     a missing key (the usual cause of mystery 401s) is obvious."""
-    key_state = f"(set, {len(TEST_API_KEY)} chars)" if TEST_API_KEY else "(NOT SET — gated tests will skip or 401)"
+    key_state = f"(set, {len(TEST_API_KEY)} chars)" if TEST_API_KEY else "(NOT SET - gated tests will skip or 401)"
     return [
         f"CntrPort wrapper base URL : {TEST_BASE_URL}",
         f"CntrPort auth header      : {TEST_API_KEY_HEADER}",
@@ -133,7 +133,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     # If a key is configured for the tests, prove it opens the gate before
     # we run anything. A 401 here means the test process loaded a value
-    # that doesn't match what Flask is using — the #1 cause of mass-401s.
+    # that doesn't match what Flask is using - the #1 cause of mass-401s.
     if TEST_API_KEY:
         gate = requests.get(
             TEST_BASE_URL + "/api/cp",

@@ -1,4 +1,4 @@
-"""`/api/cp` manifest tests — describes what the wrapper exposes."""
+"""`/api/cp` manifest tests - describes what the wrapper exposes."""
 from __future__ import annotations
 
 
@@ -10,7 +10,7 @@ def test_manifest_ok(client):
     assert "registry" in data
     assert "registry_count" in data
     assert data["registry_count"] == len(data["registry"])
-    assert data["registry_count"] > 0, "registry is empty — cp_endpoints.ENDPOINTS not loaded?"
+    assert data["registry_count"] > 0, "registry is empty - cp_endpoints.ENDPOINTS not loaded?"
 
 
 def test_manifest_lists_known_endpoints(client):

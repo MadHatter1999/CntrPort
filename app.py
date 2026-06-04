@@ -5,7 +5,7 @@ Every guide endpoint is registered as a typed route in cp_endpoints.py and
 gets pre/during/post hooks (see __CntrPHooks__.py). Anything not registered
 still works via the generic /api/cp/<path> mirror.
 
-Two ground rules: SQL is read-only — all writes go through the Counterpoint
+Two ground rules: SQL is read-only - all writes go through the Counterpoint
 API so its triggers and replication stay intact. Counterpoint credentials
 (Basic + APIKey) are injected from .env server-side; callers never see them.
 """
@@ -64,7 +64,7 @@ CP_ALLOW_DIRECT_MODE = _env_bool("CP_ALLOW_DIRECT_MODE", False)
 
 # Wrapper-level API key. When set, every caller must send it in the header
 # named by CNTRPORT_API_KEY_HEADER (default: X-API-Key). Leave blank to keep
-# the wrapper open (legacy behavior — rely on network-level auth only).
+# the wrapper open (legacy behavior - rely on network-level auth only).
 # This is the *caller's* key into this wrapper. It's separate from CP_API_KEY,
 # which is the wrapper's key into NCR, and is never forwarded upstream.
 CNTRPORT_API_KEY        = _env("CNTRPORT_API_KEY")
@@ -284,7 +284,7 @@ def health():
 # Built-in SQL extensions. Read-only catalog and kit lookups for things NCR's
 # API doesn't surface cleanly. The real framework pieces are the helpers
 # above (get_sql_connection, _safe_select, get_existing_columns); these
-# routes are just examples — feel free to rip them out and write your own.
+# routes are just examples - feel free to rip them out and write your own.
 
 @app.get("/api/sql/items")
 def sql_items():
@@ -583,7 +583,7 @@ def sql_subcategories():
 
 # Typed routes from cp_endpoints.ENDPOINTS. Each registry row becomes a Flask
 # rule with hook support (see __CntrPHooks__.py). Routes mount twice: at
-# /api/cp/<guide_path> and at /<guide_path> (drop-in — change the port and
+# /api/cp/<guide_path> and at /<guide_path> (drop-in - change the port and
 # nothing else). Unregistered paths still work through the generic mirror
 # below, so the wrapper doesn't block forward compatibility.
 
@@ -927,6 +927,26 @@ def cp_proxy(subpath: str):
     return Response(resp.content, status=resp.status_code, content_type=content_type)
 
 
+@app.route("/<path:subpath>", methods=_PROXY_METHODS)
+def cp_proxy_root(subpath: str):
+    """Catch-all root-level mirror. Anything not matched by a typed CP
+    route or an internal /api/* path falls through to the upstream
+    Counterpoint API - same behavior as /api/cp/<path>, but at the path
+    callers' existing integrations already use.
+
+    This makes the wrapper a true drop-in: point any existing CP client
+    at this port and every endpoint reaches NCR by default, registered
+    or not. New NCR endpoints work the day they ship; cp_endpoints.py
+    only matters when you want hooks on a specific path."""
+    full_path = "/" + subpath
+    if any(full_path.startswith(p) for p in _RESERVED_ROOT_PREFIXES):
+        return jsonify({
+            "ok": False,
+            "message": f"{full_path} is reserved by the wrapper, not a Counterpoint path.",
+        }), 404
+    return cp_proxy(subpath)
+
+
 @app.get("/api/cp")
 def cp_mirror_index():
     """Describe the wrapper so callers can discover what's exposed."""
@@ -952,9 +972,11 @@ def cp_mirror_index():
     return jsonify({
         "ok": True,
         "message": (
-            "Wraps the NCR Counterpoint API. Each guide endpoint is mounted "
-            "at /api/cp/<path> and at /<path> (drop in, change the port). "
-            "Anything not listed falls through to the generic mirror."
+            "Wraps the NCR Counterpoint API. Every endpoint is mounted at "
+            "/api/cp/<path> and at /<path> (drop in, change the port). "
+            "Anything not in the typed registry still falls through to "
+            "NCR - either at /api/cp/<path> or at the bare /<path> root - "
+            "so new NCR endpoints work the day they ship."
         ),
         "guide": "https://github.com/NCRCounterpointAPI/APIGuide",
         "base_url": CP_API_BASE_URL,

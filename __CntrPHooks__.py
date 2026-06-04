@@ -27,12 +27,12 @@ mutable.
 
 One gotcha. If CP_ALLOW_DIRECT_MODE=true in .env, callers can bypass this
 whole file per-request with ?_direct=1 or X-CntrP-Mode: direct. So hooks
-aren't a security boundary — if a hook MUST run (compliance redaction,
+aren't a security boundary - if a hook MUST run (compliance redaction,
 say), leave direct mode off in that env.
 
 For caller authentication, use the wrapper API key (CNTRPORT_API_KEY in
-.env). It runs in app.before_request — *before* hooks and *before* direct
-mode — so an unauthenticated caller can't bypass it. Hooks are the right
+.env). It runs in app.before_request - *before* hooks and *before* direct
+mode - so an unauthenticated caller can't bypass it. Hooks are the right
 place for *richer* identity logic on top of the key (mapping keys to
 caller IDs for audit, requiring a stronger key on sensitive endpoints,
 etc.). See the templates at the bottom of this file.
@@ -173,7 +173,7 @@ log = logging.getLogger("cntrp.hooks")
 # The wrapper API-key gate (CNTRPORT_API_KEY in .env, default header
 # X-API-Key) runs in app.before_request, so by the time any hook fires the
 # caller is already authenticated. These templates show patterns that build
-# on that — mapping keys to callers for audit, and requiring a stronger key
+# on that - mapping keys to callers for audit, and requiring a stronger key
 # on destructive endpoints.
 
 
@@ -196,7 +196,7 @@ log = logging.getLogger("cntrp.hooks")
 #     return _KEY_TO_CALLER.get(request.headers.get(header, ""), "unknown")
 #
 # # Stamp the caller on a representative set of write endpoints. Use any
-# # registry name from cp_endpoints.ENDPOINTS — these are just examples.
+# # registry name from cp_endpoints.ENDPOINTS - these are just examples.
 # for _name in ("post_document", "post_customer", "patch_customer",
 #               "post_document_payments"):
 #     @cp_endpoints.pre(_name)

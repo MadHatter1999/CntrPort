@@ -17,7 +17,7 @@ def test_health_has_expected_shape(client):
 
 
 def test_counterpoint_api_reachable(client):
-    """A 401 from CP still flips cp.ok=true — the server answered. Only
+    """A 401 from CP still flips cp.ok=true - the server answered. Only
     transport errors (timeout, DNS, refused) flip it false. If this fails,
     check CP_API_BASE_URL and that the Counterpoint API service is up."""
     cp = client.get("/api/health").json()["counterpoint_api"]

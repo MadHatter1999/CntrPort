@@ -2,7 +2,7 @@
 
 Read-only smoke tests that hit a running wrapper and verify it forwards
 to Counterpoint correctly. Safe to run against a live install
-(BishopsCellar etc.) — no POST/PUT/PATCH/DELETE.
+(BishopsCellar etc.) - no POST/PUT/PATCH/DELETE.
 
 ## Running on the VM
 
@@ -17,7 +17,7 @@ Tests auto-discover what's configured:
 
 | Test file               | Skips when                                      |
 | ----------------------- | ----------------------------------------------- |
-| `test_health.py`        | never — always runs                             |
+| `test_health.py`        | never - always runs                             |
 | `test_manifest.py`      | never                                           |
 | `test_typed_routes.py`  | never (probes are low-impact GETs)              |
 | `test_mirror.py`        | never                                           |
@@ -41,18 +41,18 @@ clear message instead of firing a wall of connection errors.
 
 ## What's covered
 
-- **Health** — `/api/health` shape, CP reachability, SQL status.
-- **Auth gate** — exempt paths, missing/wrong/correct key, no-auth mode.
-- **Manifest** — `/api/cp` shape, known endpoints listed, direct-mode block.
-- **Typed routes** — drop-in and `/api/cp/` mount both reach CP; same status.
-- **Mirror** — `/api/cp/<unknown>` forwards; query strings preserved.
-- **SQL extensions** — categories, subcategories, items, kits, item detail 404.
-- **Direct mode** — `?_direct=1` and `X-CntrP-Mode: direct` both opt in;
+- **Health** - `/api/health` shape, CP reachability, SQL status.
+- **Auth gate** - exempt paths, missing/wrong/correct key, no-auth mode.
+- **Manifest** - `/api/cp` shape, known endpoints listed, direct-mode block.
+- **Typed routes** - drop-in and `/api/cp/` mount both reach CP; same status.
+- **Mirror** - `/api/cp/<unknown>` forwards; query strings preserved.
+- **SQL extensions** - categories, subcategories, items, kits, item detail 404.
+- **Direct mode** - `?_direct=1` and `X-CntrP-Mode: direct` both opt in;
   response header marks direct responses; flag stripped before upstream.
 
 ## What's NOT covered
 
 Writes. The probe set is GET-only by design. If you want to verify a
 write path (`POST /Document`, `PATCH /Customer/...`), add a dedicated
-test that uses a known dev/test record and clean up after itself — don't
+test that uses a known dev/test record and clean up after itself - don't
 mix it into this suite.

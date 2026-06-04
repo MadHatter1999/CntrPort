@@ -37,7 +37,7 @@ def test_normal_request_has_no_direct_header(client, direct_or_skip):
 def test_direct_query_flag_stripped_before_forwarding(client, direct_or_skip):
     """The wrapper strips `_direct` from the query before forwarding. We
     can't observe CP's view directly, but if it was forwarded CP would
-    treat it as an unknown query param — harmless, but we at least verify
+    treat it as an unknown query param - harmless, but we at least verify
     the request still succeeds end-to-end."""
     r = client.get("/Company", params={"_direct": "1", "_smoke": "1"})
     assert r.status_code not in (0, 502)

@@ -241,9 +241,12 @@ DELETE /Customer/12345/Address              ── same as DELETE /api/cp/Custom
 Auth matches NCR's (HTTP Basic + APIKey header), but the wrapper injects
 both from `.env`, so callers don't need to send them.
 
-Anything not in `cp_endpoints.ENDPOINTS` still works through the generic
-mirror at `/api/cp/<path>`, so new NCR endpoints are reachable before the
-registry catches up. See [Generic mirror](#generic-mirror-forward-compatibility).
+Anything not in `cp_endpoints.ENDPOINTS` still falls through to NCR
+automatically - at **both** the bare `/<path>` root **and** the
+`/api/cp/<path>` prefix. The wrapper is drop-in by default: every
+unmatched path gets forwarded upstream, so new NCR endpoints work the
+day they ship. The typed registry only matters when you want hooks on
+a specific path. See [Generic mirror](#generic-mirror-forward-compatibility).
 
 ---
 
@@ -322,13 +325,13 @@ prefix. Same outcome either way.
 The registry in [cp_endpoints.py](cp_endpoints.py) lists every Counterpoint
 endpoint the wrapper exposes as a typed route. Each row carries:
 
-- `method` — GET / POST / PUT / PATCH / DELETE
-- `guide_path` — the path NCR documents, e.g. `/Customer/{CustNo}/Address`
-- `name` — stable identifier hooks attach to; doesn't change if NCR
+- `method` - GET / POST / PUT / PATCH / DELETE
+- `guide_path` - the path NCR documents, e.g. `/Customer/{CustNo}/Address`
+- `name` - stable identifier hooks attach to; doesn't change if NCR
   renames the path
-- `description` — what it does in one line
-- `requires_api_key` — whether NCR demands the APIKey header here
-- `requires_cp_registration` — whether the company has to be CP-registered
+- `description` - what it does in one line
+- `requires_api_key` - whether NCR demands the APIKey header here
+- `requires_cp_registration` - whether the company has to be CP-registered
 
 Add or remove entries by editing the list.
 
@@ -720,21 +723,28 @@ def customers_by_zip():
 
 ## Generic mirror (forward compatibility)
 
-Any Counterpoint endpoint not in the registry is still reachable at:
+Any Counterpoint endpoint not in the typed registry is still reachable
+at **either** of:
 
 ```
 <METHOD> /api/cp/<guide path>
+<METHOD> /<guide path>
 ```
 
-The mirror forwards method, query string, headers, and body bytes
-transparently. Auth is injected the same way as on registered routes.
+Both forward method, query string, headers, and body bytes transparently
+to the upstream Counterpoint API. Auth is injected the same way as on
+registered routes. Reserved roots `/api/*` and `/static/*` are excluded
+from the bare-root mirror so the wrapper's own endpoints (`/api/health`,
+`/api/cp`, `/api/sql/*`) aren't shadowed.
 
-Use it to hit a new NCR endpoint before the registry catches up, to test
-an endpoint shape before wiring it in, or to forward an oddball
-content-type the typed dispatcher might mangle.
+Practical consequence: this wrapper is a **true drop-in by default**.
+Point your existing Counterpoint client at this port and every endpoint
+works on day one, registered or not. The typed registry only matters
+when you want hooks (pre / during / post) on a specific path; everything
+else falls through to NCR unchanged.
 
-Mirror requests don't run hooks. If you want hooks for a path, add the row
-to `cp_endpoints.ENDPOINTS` and the typed dispatcher takes over.
+Mirror requests don't run hooks. If you want hooks for a path, add the
+row to `cp_endpoints.ENDPOINTS` and the typed dispatcher takes over.
 
 ---
 
@@ -810,7 +820,7 @@ and replication paths stay intact.
 The wrapper supports an optional API-key gate. Set `CNTRPORT_API_KEY` in
 `.env` and every caller must send the same value in the
 `CNTRPORT_API_KEY_HEADER` (default `X-API-Key`). Requests without it get a
-401. The key is **not** forwarded to NCR — `CP_API_KEY` still handles
+401. The key is **not** forwarded to NCR - `CP_API_KEY` still handles
 upstream auth. Paths listed in `CNTRPORT_AUTH_EXEMPT_PATHS` (default
 `/api/health`) skip the check so uptime monitors keep working.
 
@@ -862,7 +872,7 @@ in production by installing a trusted certificate.
 
 Check `CP_API_BASE_URL` against the running service (default port 52000),
 the Windows service `Counterpoint API` (or whatever yours is called), and
-firewall rules. A 401 isn't down — the pill stays green on any HTTP
+firewall rules. A 401 isn't down - the pill stays green on any HTTP
 response. Red only fires on transport errors.
 
 ### Health says SQL is down
@@ -884,7 +894,7 @@ match the third column of a row exactly. Typos raise
 `KeyError: Unknown endpoint name` at import. Second, `app.py` has to
 actually import your hook module. Hooks register on import; if Python
 never runs the file, the decorators never fire. Third, make sure Flask
-isn't routing to the generic mirror instead — mirror paths skip hooks. Hit
+isn't routing to the generic mirror instead - mirror paths skip hooks. Hit
 `/api/cp` and look at `has_pre_hooks` / `has_during_hook` /
 `has_post_hooks` for the endpoint you care about.
 

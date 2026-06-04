@@ -46,13 +46,13 @@ def test_correct_key_accepted(client, config):
 def test_key_is_not_forwarded_upstream(client, config):
     """The wrapper key is for the wrapper. It must not appear on the
     request sent to NCR. We can't see the upstream call directly, but the
-    manifest tells us CP_API_KEY_HEADER (what NCR expects) — and the
+    manifest tells us CP_API_KEY_HEADER (what NCR expects) - and the
     wrapper's CNTRPORT_API_KEY_HEADER should be different so there's no
     collision."""
     if not config["auth_enabled"]:
         pytest.skip("CNTRPORT_API_KEY not set; wrapper auth disabled")
     # Indirect check: the wrapper key header should not be the same as
-    # NCR's APIKey header — otherwise a misconfiguration would let the
+    # NCR's APIKey header - otherwise a misconfiguration would let the
     # caller's key reach NCR.
     assert config["key_header"].lower() != "apikey", (
         "CNTRPORT_API_KEY_HEADER must not collide with CP_API_KEY_HEADER "

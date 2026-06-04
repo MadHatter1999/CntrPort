@@ -38,7 +38,7 @@ def test_items_search_respects_limit(client, sql_or_skip):
 
 def test_items_search_with_query(client, sql_or_skip):
     """Empty `q` returns recent items. Non-empty `q` filters. Either way,
-    we just verify the shape — actual matches depend on the install."""
+    we just verify the shape - actual matches depend on the install."""
     r = client.get("/api/sql/items", params={"q": "", "limit": 3})
     assert r.status_code == 200
     for item in r.json().get("items", []):

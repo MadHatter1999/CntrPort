@@ -3,7 +3,7 @@
 Every endpoint in cp_endpoints.ENDPOINTS is mounted twice: at the bare
 path (drop-in mode) and under /api/cp/<path>. Both should reach CP and
 return the same status. We pick a few low-impact, read-only system
-endpoints as probes — they may return 401/403 if the CP user lacks
+endpoints as probes - they may return 401/403 if the CP user lacks
 permission, but they must never return 502 (which would mean the wrapper
 couldn't reach CP) or 0 (transport error).
 """
@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 
 # Low-impact GETs. Doesn't matter if they return 200, 401, 403, or 404
-# from CP — what matters is the wrapper got there and back.
+# from CP - what matters is the wrapper got there and back.
 READ_ONLY_PROBES = [
     "/Company",
     "/SystemInfo",
@@ -40,7 +40,7 @@ def test_prefixed_mode_reaches_cp(client, path):
 
 @pytest.mark.parametrize("path", READ_ONLY_PROBES)
 def test_drop_in_and_prefixed_match(client, path):
-    """The two mount points should be the same view — same status code on
+    """The two mount points should be the same view - same status code on
     the same back-to-back call."""
     a = client.get(path).status_code
     b = client.get("/api/cp" + path).status_code
