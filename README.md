@@ -45,6 +45,10 @@ and your integrations only have to swap ports. The paths match.
 - [Troubleshooting](#troubleshooting)
 - [Out of scope](#out-of-scope)
 
+> **New:** Optional wrapper API-key auth. Set `CNTRPORT_API_KEY` in `.env`
+> and callers must send `X-API-Key: <value>` on every request. See
+> [Security model](#security-model).
+
 ---
 
 ## License
@@ -198,6 +202,9 @@ All settings come from environment variables loaded by `python-dotenv`.
 | `CP_API_KEY_HEADER`     | no       | Header name for the API key. Default `APIKey`.                          |
 | `CP_API_VERIFY_SSL`     | no       | `false` to accept self-signed certs on local installs. Default `true`.  |
 | `CP_ALLOW_DIRECT_MODE`  | no       | `true` lets callers opt out of hooks per-request. Default `false`. See [Direct mode](#direct-mode-per-request-hook-bypass). |
+| `CNTRPORT_API_KEY`      | no       | Wrapper-level API key callers must send. Blank = no auth (legacy). See [Security model](#security-model). |
+| `CNTRPORT_API_KEY_HEADER` | no     | Header name callers send the wrapper key in. Default `X-API-Key`.       |
+| `CNTRPORT_AUTH_EXEMPT_PATHS` | no  | Comma-separated paths that skip the key check. Default `/api/health`.   |
 | `CP_SQL_SERVER`         | sql only | SQL Server hostname or `.` for local                                    |
 | `CP_SQL_DATABASE`       | sql only | Counterpoint database name                                              |
 | `CP_SQL_USER`           | sql only | SQL login                                                               |
@@ -800,10 +807,25 @@ queries are parameterized and read-only. When you add SQL extensions,
 keep the same rule: writes go through the Counterpoint API so triggers
 and replication paths stay intact.
 
-The wrapper has no authentication of its own. Bind it to localhost or an
-internal network and put it behind whatever auth layer your integrations
-already use. Treat the threat model as: anyone who can reach this port
-can use the Counterpoint API with the configured creds.
+The wrapper supports an optional API-key gate. Set `CNTRPORT_API_KEY` in
+`.env` and every caller must send the same value in the
+`CNTRPORT_API_KEY_HEADER` (default `X-API-Key`). Requests without it get a
+401. The key is **not** forwarded to NCR — `CP_API_KEY` still handles
+upstream auth. Paths listed in `CNTRPORT_AUTH_EXEMPT_PATHS` (default
+`/api/health`) skip the check so uptime monitors keep working.
+
+```bash
+# With CNTRPORT_API_KEY set in .env:
+curl -H 'X-API-Key: your-key-here' http://localhost:5000/Customer/12345
+
+# Without the header (or wrong value):
+# -> 401 {"ok": false, "message": "Missing or invalid X-API-Key header."}
+```
+
+Leave `CNTRPORT_API_KEY` blank to keep the wrapper open (legacy behavior).
+Either way, still treat the network the wrapper sits on as trusted: bind
+it to localhost or an internal segment and put a reverse proxy in front
+for TLS termination and rate limiting.
 
 In anything non-dev, replace the SQL `sa` account with a dedicated
 read-only login that has `SELECT` only on the tables your extensions

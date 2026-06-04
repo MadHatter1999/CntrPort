@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+import secrets
 from decimal import Decimal
 from typing import Any, Iterable
 
@@ -61,6 +62,20 @@ CP_API_VERIFY_SSL  = _env_bool("CP_API_VERIFY_SSL", True)
 # Default false: keeps compliance/redact hooks from being trivially bypassed.
 CP_ALLOW_DIRECT_MODE = _env_bool("CP_ALLOW_DIRECT_MODE", False)
 
+# Wrapper-level API key. When set, every caller must send it in the header
+# named by CNTRPORT_API_KEY_HEADER (default: X-API-Key). Leave blank to keep
+# the wrapper open (legacy behavior — rely on network-level auth only).
+# This is the *caller's* key into this wrapper. It's separate from CP_API_KEY,
+# which is the wrapper's key into NCR, and is never forwarded upstream.
+CNTRPORT_API_KEY        = _env("CNTRPORT_API_KEY")
+CNTRPORT_API_KEY_HEADER = _env("CNTRPORT_API_KEY_HEADER", "X-API-Key")
+# Paths that bypass the wrapper API key check (e.g. health probes for
+# monitors and load balancers). Comma-separated list of exact paths.
+CNTRPORT_AUTH_EXEMPT_PATHS = {
+    p.strip() for p in _env("CNTRPORT_AUTH_EXEMPT_PATHS", "/api/health").split(",")
+    if p.strip()
+}
+
 CP_SQL_SERVER      = _env("CP_SQL_SERVER", ".")
 CP_SQL_DATABASE    = _env("CP_SQL_DATABASE")
 CP_SQL_USER        = _env("CP_SQL_USER", "sa")
@@ -80,6 +95,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("orderentry")
 
 app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Wrapper API-key gate
+# ---------------------------------------------------------------------------
+
+@app.before_request
+def _require_wrapper_api_key():
+    """Reject any request that doesn't carry the configured wrapper API key.
+
+    Opt-in: if CNTRPORT_API_KEY is unset, the gate is a no-op (preserves
+    legacy "no auth" behavior). When set, callers must send the same value
+    in CNTRPORT_API_KEY_HEADER (default: X-API-Key). compare_digest avoids
+    timing-side-channel leakage on the comparison.
+    """
+    if not CNTRPORT_API_KEY:
+        return None
+    if request.path in CNTRPORT_AUTH_EXEMPT_PATHS:
+        return None
+    supplied = request.headers.get(CNTRPORT_API_KEY_HEADER, "")
+    if not supplied or not secrets.compare_digest(supplied, CNTRPORT_API_KEY):
+        return jsonify({
+            "ok": False,
+            "message": f"Missing or invalid {CNTRPORT_API_KEY_HEADER} header.",
+        }), 401
+    return None
 
 # ---------------------------------------------------------------------------
 # SQL helpers (READ-ONLY by application behavior)

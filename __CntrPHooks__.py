@@ -30,6 +30,13 @@ whole file per-request with ?_direct=1 or X-CntrP-Mode: direct. So hooks
 aren't a security boundary — if a hook MUST run (compliance redaction,
 say), leave direct mode off in that env.
 
+For caller authentication, use the wrapper API key (CNTRPORT_API_KEY in
+.env). It runs in app.before_request — *before* hooks and *before* direct
+mode — so an unauthenticated caller can't bypass it. Hooks are the right
+place for *richer* identity logic on top of the key (mapping keys to
+caller IDs for audit, requiring a stronger key on sensitive endpoints,
+etc.). See the templates at the bottom of this file.
+
 Uncomment the templates below and tweak them. Anything still commented
 does nothing. Restart Flask after editing.
 """
@@ -160,3 +167,74 @@ log = logging.getLogger("cntrp.hooks")
 #         return
 #     if ctx["response_status"] == 200:
 #         _STORE_CACHE[_store_key(ctx)] = (time.time(), ctx["response_body"])
+
+
+# --- wrapper API-key extensions --------------------------------------------
+# The wrapper API-key gate (CNTRPORT_API_KEY in .env, default header
+# X-API-Key) runs in app.before_request, so by the time any hook fires the
+# caller is already authenticated. These templates show patterns that build
+# on that — mapping keys to callers for audit, and requiring a stronger key
+# on destructive endpoints.
+
+
+# Map known keys -> caller identity, stamp it on every request for audit.
+# Useful when several integrations share the wrapper (POS, eCom, ops tools)
+# and you want logs to say *who* did what, not just "someone with a key".
+#
+# import os
+# from flask import request
+#
+# _KEY_TO_CALLER = {
+#     os.getenv("CNTRPORT_KEY_POS",   ""): "pos",
+#     os.getenv("CNTRPORT_KEY_ECOM",  ""): "ecom",
+#     os.getenv("CNTRPORT_KEY_OPS",   ""): "ops-dashboard",
+# }
+# _KEY_TO_CALLER.pop("", None)  # drop unset env vars so blank != match
+#
+# def _identify_caller():
+#     header = os.getenv("CNTRPORT_API_KEY_HEADER", "X-API-Key")
+#     return _KEY_TO_CALLER.get(request.headers.get(header, ""), "unknown")
+#
+# # Stamp the caller on a representative set of write endpoints. Use any
+# # registry name from cp_endpoints.ENDPOINTS — these are just examples.
+# for _name in ("post_document", "post_customer", "patch_customer",
+#               "post_document_payments"):
+#     @cp_endpoints.pre(_name)
+#     def _stamp_caller(ctx, _name=_name):
+#         ctx["meta"]["caller"] = _identify_caller()
+#
+#     @cp_endpoints.post(_name)
+#     def _log_caller(ctx, _name=_name):
+#         log.info("AUDIT caller=%s %s %s -> %s",
+#                  ctx["meta"].get("caller", "unknown"),
+#                  ctx["method"], ctx["guide_path"], ctx["response_status"])
+
+
+# Require a second, stronger key on destructive / admin endpoints. The
+# wrapper key gets a caller in the door; the admin key gates the dangerous
+# verbs. Set CNTRPORT_ADMIN_KEY in .env and send it alongside X-API-Key.
+#
+# import os, secrets
+# from flask import request
+#
+# _ADMIN_ONLY = (
+#     "delete_admin_user",
+#     "delete_company_admin",
+#     "delete_database",
+#     "delete_role",
+#     "delete_user_roles",
+# )
+#
+# def _require_admin_key(ctx):
+#     expected = os.getenv("CNTRPORT_ADMIN_KEY", "")
+#     supplied = request.headers.get("X-Admin-Key", "")
+#     if not expected or not supplied or not secrets.compare_digest(supplied, expected):
+#         ctx["skip_upstream"] = True
+#         ctx["response_status"] = 403
+#         ctx["response_body"] = {
+#             "ok": False,
+#             "message": "X-Admin-Key required for this endpoint.",
+#         }
+#
+# for _name in _ADMIN_ONLY:
+#     cp_endpoints.pre(_name)(_require_admin_key)
