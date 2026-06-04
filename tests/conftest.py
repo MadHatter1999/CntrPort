@@ -62,11 +62,17 @@ class Client:
             hdrs.update(extra)
         return hdrs
 
+    # Matches the upstream timeout the wrapper uses for forwarded calls
+    # (see _cp_upstream_call in app.py). Bulk endpoints like /Items can
+    # return thousands of records on a real install and 15s isn't enough
+    # for the wrapper to receive CP's response and re-emit it.
+    DEFAULT_TIMEOUT = 60
+
     def get(self, path: str, *, headers: dict[str, str] | None = None, **kw: Any):
         return self.session.get(
             self.base_url + path,
             headers=self._merge_headers(headers),
-            timeout=15,
+            timeout=self.DEFAULT_TIMEOUT,
             **kw,
         )
 
@@ -75,7 +81,7 @@ class Client:
         return self.session.get(
             self.base_url + path,
             headers=headers or {},
-            timeout=15,
+            timeout=self.DEFAULT_TIMEOUT,
             **kw,
         )
 
