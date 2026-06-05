@@ -44,6 +44,7 @@ does nothing. Restart Flask after editing.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Any
 
@@ -83,6 +84,35 @@ _BOC_PRICE_FIELDS = (
 
 _BOC_CACHE: dict[str, Any] = {"rates": None, "date": None, "ts": 0.0}
 _BOC_TTL = 6 * 3600  # 6 hours
+
+# Currency rounding rules.
+# Anything not listed here defaults to 2 decimals.
+# All rounding is done upward so the converted amount is never under BoC math.
+_CURRENCY_DECIMALS = {
+    "JPY": 0,
+    "KRW": 0,
+    "IDR": 0,
+    "VND": 0,
+    "TWD": 0,
+}
+
+
+def _round_price_not_under(value: float, ccy: str) -> float | int:
+    """Round a converted price up so it never falls below the raw value.
+
+    Examples:
+        2.9701 USD -> 2.98
+        2.5601 EUR -> 2.57
+        475.26 JPY -> 476
+        4553.47 KRW -> 4554
+    """
+    decimals = _CURRENCY_DECIMALS.get(ccy, 2)
+
+    if decimals == 0:
+        return int(math.ceil(value))
+
+    factor = 10 ** decimals
+    return math.ceil(value * factor) / factor
 
 
 def _fetch_boc_rates() -> tuple[dict[str, float] | None, str | None]:
@@ -166,15 +196,23 @@ def add_currency_conversions(ctx):
     if not rates:
         return  # BoC down and cache empty - return item unchanged
 
-    conversions: dict[str, dict[str, float]] = {}
+    conversions: dict[str, dict[str, float | int]] = {}
     for field in _BOC_PRICE_FIELDS:
         cad_price = item.get(field)
         if not isinstance(cad_price, (int, float)):
             continue
-        per_currency = {"CAD": round(float(cad_price), 2)}
+
+        cad_value = float(cad_price)
+
+        per_currency: dict[str, float | int] = {
+            "CAD": _round_price_not_under(cad_value, "CAD")
+        }
+
         for ccy, rate in rates.items():
             if rate > 0:
-                per_currency[ccy] = round(float(cad_price) / rate, 2)
+                raw_value = cad_value / rate
+                per_currency[ccy] = _round_price_not_under(raw_value, ccy)
+
         conversions[field] = per_currency
 
     if conversions:
