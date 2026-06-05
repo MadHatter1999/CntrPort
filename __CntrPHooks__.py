@@ -44,10 +44,148 @@ does nothing. Restart Flask after editing.
 from __future__ import annotations
 
 import logging
+import time
+from typing import Any
+
+import requests
 
 import cp_endpoints
 
 log = logging.getLogger("cntrp.hooks")
+
+
+# ===========================================================================
+# LIVE HOOKS - currently active in production
+# ===========================================================================
+
+# --- Bank of Canada FX enrichment on get_item -------------------------------
+# Fires after CP returns an item, calls the Bank of Canada Valet API for the
+# latest published FX rates against CAD, and stamps converted prices onto the
+# response. Rates are cached for 6 hours (BoC publishes once per business day
+# anyway). Fails soft: if BoC is unreachable and the cache is empty, the item
+# is returned unchanged.
+
+# Currencies BoC publishes against CAD. Series naming is FX<CCY>CAD.
+_BOC_CURRENCIES = (
+    "USD", "EUR", "GBP", "AUD", "BRL", "CHF", "CNY", "HKD", "IDR", "INR",
+    "JPY", "KRW", "MXN", "MYR", "NOK", "NZD", "PEN", "RUB", "SAR", "SEK",
+    "SGD", "THB", "TRY", "TWD", "VND", "ZAR",
+)
+
+# CP item price fields we'll convert if present and numeric. Items that
+# don't carry a given field are skipped silently. Covers the standard
+# price tiers (PRC_1..3, REG_PRC), cost (LST_COST), alt-unit prices
+# (ALT_1_REG_PRC for case/pack pricing), and preferred-unit prices.
+_BOC_PRICE_FIELDS = (
+    "PRC_1", "PRC_2", "PRC_3", "REG_PRC", "LST_COST",
+    "ALT_1_REG_PRC", "PREF_UNIT_PRC_1", "PREF_UNIT_REG_PRC",
+)
+
+_BOC_CACHE: dict[str, Any] = {"rates": None, "date": None, "ts": 0.0}
+_BOC_TTL = 6 * 3600  # 6 hours
+
+
+def _fetch_boc_rates() -> tuple[dict[str, float] | None, str | None]:
+    """Return (rates_by_ccy, observation_date).
+
+    Each value in `rates_by_ccy` is the number of CAD per 1 unit of the
+    foreign currency (BoC's published convention for FX<CCY>CAD series).
+    To convert a CAD price to a foreign currency: foreign = cad / rate.
+
+    Cached for _BOC_TTL seconds. On transport / parse failure, returns
+    whatever is in the cache (possibly None), so the hook can fail soft.
+    """
+    now = time.time()
+    if (
+        _BOC_CACHE["rates"] is not None
+        and now - _BOC_CACHE["ts"] < _BOC_TTL
+    ):
+        return _BOC_CACHE["rates"], _BOC_CACHE["date"]
+
+    # BoC accepts comma-separated series in one URL; one HTTP round trip for
+    # all ~26 currencies.
+    series = ",".join(f"FX{c}CAD" for c in _BOC_CURRENCIES)
+    url = f"https://www.bankofcanada.ca/valet/observations/{series}/json"
+    try:
+        r = requests.get(url, params={"recent": 1}, timeout=8)
+        if r.status_code != 200:
+            log.warning("BoC Valet returned HTTP %s; serving cached rates.",
+                        r.status_code)
+            return _BOC_CACHE["rates"], _BOC_CACHE["date"]
+        data = r.json()
+        observations = data.get("observations") or []
+        if not observations:
+            return _BOC_CACHE["rates"], _BOC_CACHE["date"]
+        obs = observations[0]
+        rates: dict[str, float] = {}
+        for ccy in _BOC_CURRENCIES:
+            entry = obs.get(f"FX{ccy}CAD")
+            if isinstance(entry, dict):
+                try:
+                    rates[ccy] = float(entry.get("v"))
+                except (TypeError, ValueError):
+                    continue
+        if rates:
+            _BOC_CACHE["rates"] = rates
+            _BOC_CACHE["date"]  = obs.get("d")
+            _BOC_CACHE["ts"]    = now
+            log.info("BoC FX rates refreshed for %s (%d currencies).",
+                     _BOC_CACHE["date"], len(rates))
+            return rates, _BOC_CACHE["date"]
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("BoC Valet fetch failed: %s", exc)
+
+    return _BOC_CACHE["rates"], _BOC_CACHE["date"]
+
+
+@cp_endpoints.post("get_item")
+def add_currency_conversions(ctx):
+    """Stamp converted prices on every /Item/<ItemNo> response.
+
+    CP returns the item wrapped: {"ErrorCode": "SUCCESS", "IM_ITEM": {...}}.
+    We drill into IM_ITEM, read each numeric price field, and stamp:
+        CURRENCY_CONVERSIONS - {field: {ccy: amount}} for each numeric price
+        FX_SOURCE            - 'BankOfCanada Valet'
+        FX_RATES_DATE        - the BoC observation date the rates came from
+    onto IM_ITEM so the enrichment sits next to the original prices.
+
+    Falls back to the top-level body for older CP responses that aren't
+    wrapped in IM_ITEM.
+    """
+    body = ctx["response_body"]
+    if not isinstance(body, dict):
+        return  # binary / error response - nothing to enrich
+
+    # CP wraps the item inside IM_ITEM. Use that if present, otherwise
+    # treat the body itself as the item (covers legacy / un-wrapped shapes).
+    item = body.get("IM_ITEM")
+    if not isinstance(item, dict):
+        item = body
+
+    rates, rates_date = _fetch_boc_rates()
+    if not rates:
+        return  # BoC down and cache empty - return item unchanged
+
+    conversions: dict[str, dict[str, float]] = {}
+    for field in _BOC_PRICE_FIELDS:
+        cad_price = item.get(field)
+        if not isinstance(cad_price, (int, float)):
+            continue
+        per_currency = {"CAD": round(float(cad_price), 2)}
+        for ccy, rate in rates.items():
+            if rate > 0:
+                per_currency[ccy] = round(float(cad_price) / rate, 2)
+        conversions[field] = per_currency
+
+    if conversions:
+        item["CURRENCY_CONVERSIONS"] = conversions
+        item["FX_SOURCE"] = "BankOfCanada Valet"
+        item["FX_RATES_DATE"] = rates_date
+
+
+# ===========================================================================
+# TEMPLATES - uncomment and tweak. Anything still commented does nothing.
+# ===========================================================================
 
 
 # --- pre-hook templates -----------------------------------------------------
