@@ -82,6 +82,19 @@ CP_SQL_USER        = _env("CP_SQL_USER", "sa")
 CP_SQL_PASSWORD    = _env("CP_SQL_PASSWORD")
 CP_SQL_DRIVER      = _env("CP_SQL_DRIVER", "ODBC Driver 17 for SQL Server")
 
+# Storefront (webstore/) presentation + order-writeback config. The catalog,
+# categories and locations are read live from Counterpoint; these cover the few
+# things CP doesn't model for a web store.
+STORE_NAME         = _env("STORE_NAME")                     # blank -> use CP company name
+STORE_CURRENCY     = _env("STORE_CURRENCY", "USD")
+STORE_TAX_RATE     = float(_env("STORE_TAX_RATE", "0") or 0)
+# Forgive percent-style entries: a storefront tax rate is a decimal (0.15), never
+# >100%. So 15 -> 0.15, 14 -> 0.14. Avoids a 1400%-tax footgun.
+if STORE_TAX_RATE > 1:
+    STORE_TAX_RATE = STORE_TAX_RATE / 100.0
+STORE_DEFAULT_LOC_ID  = _env("STORE_DEFAULT_LOC_ID")        # location for web orders
+STORE_DEFAULT_CUST_NO = _env("STORE_DEFAULT_CUST_NO")       # walk-in/web customer no
+
 FLASK_HOST  = _env("FLASK_HOST", "0.0.0.0")
 FLASK_PORT  = _env_int("FLASK_PORT", 5000)
 FLASK_DEBUG = _env_bool("FLASK_DEBUG", True)
@@ -888,6 +901,29 @@ def _register_cp_typed_routes() -> None:
 _register_cp_typed_routes()
 
 
+# Storefront aggregation endpoints for webstore/ (see store_api.py). These shape
+# whatever is in Counterpoint into clean JSON for the PWA and post web orders
+# back as CP Documents. Kept in their own module so the generic mirror stays 1:1.
+import store_api
+
+store_api.register_store_routes(
+    app,
+    cp_api_request=cp_api_request,
+    cp_upstream_call=_cp_upstream_call,
+    get_sql_connection=get_sql_connection,
+    get_existing_columns=get_existing_columns,
+    safe_select=_safe_select,
+    jsonable=_jsonable,
+    config={
+        "store_name": STORE_NAME,
+        "currency": STORE_CURRENCY,
+        "tax_rate": STORE_TAX_RATE,
+        "default_loc_id": STORE_DEFAULT_LOC_ID,
+        "default_cust_no": STORE_DEFAULT_CUST_NO,
+    },
+)
+
+
 # Generic 1:1 mirror. Catches anything the typed registry doesn't cover so
 # new NCR endpoints work before we update cp_endpoints.py.
 
@@ -1001,6 +1037,13 @@ def cp_mirror_index():
             "/api/sql/kits",
             "/api/sql/categories",
             "/api/sql/subcategories",
+        ],
+        "store_endpoints": [
+            "/api/store/config",
+            "/api/store/categories",
+            "/api/store/products",
+            "/api/store/item-image/<item_no>",
+            "/api/store/order",
         ],
     })
 

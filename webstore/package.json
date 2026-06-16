@@ -1,0 +1,25 @@
+{
+  "name": "cntrport-webstore",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Counterpoint-backed storefront PWA (TypeScript + Vite). Reads its catalog from the CntrPort wrapper.",
+  "scripts": {
+    "dev": "vite",
+    "dev:lan": "vite --host",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "preview:lan": "vite preview --host",
+    "icons": "node scripts/generate-icons.mjs",
+    "deploy": "npm run build && firebase deploy --only hosting"
+  },
+  "devDependencies": {
+    "sharp": "^0.33.5",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "vite-plugin-pwa": "^0.20.5"
+  },
+  "dependencies": {
+    "firebase": "^12.14.0"
+  }
+}

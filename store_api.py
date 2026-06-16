@@ -1,0 +1,407 @@
+"""
+Storefront API for the web store (webstore/).
+
+These are *new* aggregation endpoints - not 1:1 Counterpoint mirrors - that
+shape whatever is in Counterpoint into the clean, presentation-ready JSON the
+PWA storefront consumes. They are intentionally generic: no store name, no
+locations, no catalog is hard-coded here. Everything is read live from
+Counterpoint (SQL for bulk catalog reads, the CP API for writes/images), with
+env-var overrides for the few presentation values CP doesn't own (currency,
+tax rate, fallback store name).
+
+Mounted by app.py via register_store_routes(app, ...). Kept separate from the
+generic wrapper so the storefront concern never pollutes the 1:1 CP mirror.
+
+Endpoints
+  GET  /api/store/config              -> { name, currency, taxRate, stores[] }
+  GET  /api/store/categories          -> [{ id, name, image, tint }]
+  GET  /api/store/products            -> [{ id, name, categoryId, price, unit, image, badge }]
+  GET  /api/store/item-image/<item>   -> image bytes (or an SVG placeholder)
+  POST /api/store/order               -> { ok, ref, doc_id, ... }  (writes a CP Document)
+
+Writes always go through the Counterpoint API so its triggers/replication stay
+intact. SQL is read-only.
+"""
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Callable
+
+from flask import Response, jsonify, request
+
+log = logging.getLogger("cntrport.store")
+
+# A soft palette reused for category tiles (CP has no tile colour concept).
+_TINTS = [
+    "#F3D6D2", "#F6E0EC", "#FBEFD0", "#DDEFD4", "#D6E8F5", "#D7ECF0",
+    "#F0E2CC", "#D5E6EA", "#E6DBCF", "#F2E2CE", "#F0E4D2", "#F4ECD2",
+    "#F4D9DD", "#DCE6F2", "#E7EAD3", "#F7EBC6", "#DCEDE0",
+]
+
+# 1x1-ish neutral placeholder so a missing item photo still renders cleanly.
+_PLACEHOLDER_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'>"
+    "<rect width='100%' height='100%' fill='#ece7df'/>"
+    "<text x='50%' y='50%' fill='#b9ae9c' font-family='sans-serif' "
+    "font-size='20' text-anchor='middle' dominant-baseline='middle'>No image</text>"
+    "</svg>"
+)
+
+
+def register_store_routes(
+    app,
+    *,
+    cp_api_request: Callable[..., tuple[int, Any, str | None]],
+    cp_upstream_call: Callable[..., dict[str, Any]],
+    get_sql_connection: Callable[[], Any],
+    get_existing_columns: Callable[[str], set[str]],
+    safe_select: Callable[[str, Any], list[str]],
+    jsonable: Callable[[Any], Any],
+    config: dict[str, Any],
+) -> None:
+    """Attach the storefront routes to the Flask app. `config` carries env-driven
+    presentation defaults (currency, tax rate, fallback store name, default
+    location/customer for order writeback)."""
+
+    def _table_exists(cur, table: str) -> bool:
+        cur.execute(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = ?",
+            table,
+        )
+        return cur.fetchone()[0] > 0
+
+    def _first_existing_table(cur, candidates: list[str]) -> str | None:
+        for t in candidates:
+            if _table_exists(cur, t):
+                return t
+        return None
+
+    # ── Config ────────────────────────────────────────────────────────────
+    @app.get("/api/store/config")
+    def store_config():
+        """Store-wide presentation config. Name/locations are read from
+        Counterpoint when available; currency and tax come from env (CP doesn't
+        model a storefront tax rate)."""
+        name = config.get("store_name") or ""
+        if not name:
+            # Try the company name from the Counterpoint API.
+            try:
+                status, body, _err = cp_api_request("GET", "/Company")
+                if status and isinstance(body, dict):
+                    name = (
+                        body.get("CompanyName")
+                        or body.get("COMPANY_NAME")
+                        or body.get("Name")
+                        or ""
+                    )
+            except Exception as exc:  # pragma: no cover - network/permission
+                log.info("store_config: company lookup failed: %s", exc)
+        if not name:
+            # Fall back to SQL (SY_COMP.NAM) so the name works from SQL alone,
+            # even before the CP API is wired up.
+            name = _company_name_from_sql()
+        if not name:
+            name = "Web Store"
+
+        return jsonify({
+            "ok": True,
+            "name": name,
+            "currency": config.get("currency", "USD"),
+            "taxRate": config.get("tax_rate", 0.0),
+            "stores": _load_locations(),
+        })
+
+    def _load_locations() -> list[dict[str, Any]]:
+        """Inventory locations -> storefront 'stores'. Schema-tolerant: different
+        Counterpoint versions name the location table/columns differently."""
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                tbl = _first_existing_table(cur, ["IM_LOC", "IM_LOC_VIEW", "VI_IM_LOC"])
+                if not tbl:
+                    return []
+                wanted = [
+                    "LOC_ID", "NAM", "DESCR", "ADRS_1", "ADRS_2",
+                    "CITY", "STATE", "ZIP_COD", "PHONE_1",
+                ]
+                cols = safe_select(tbl, wanted)
+                if "LOC_ID" not in cols:
+                    return []
+                cur.execute(f"SELECT {', '.join(cols)} FROM {tbl} ORDER BY LOC_ID")
+                out: list[dict[str, Any]] = []
+                for r in cur.fetchall():
+                    rec = {c: jsonable(getattr(r, c, None)) for c in cols}
+                    addr = ", ".join(
+                        str(rec[c]).strip()
+                        for c in ("ADRS_1", "CITY", "STATE", "ZIP_COD")
+                        if rec.get(c)
+                    )
+                    out.append({
+                        "id": str(rec.get("LOC_ID", "")).strip(),
+                        "name": (rec.get("NAM") or rec.get("DESCR") or rec.get("LOC_ID") or "").strip(),
+                        "address": addr,
+                        "phone": (rec.get("PHONE_1") or "").strip(),
+                        # CP doesn't store storefront opening hours.
+                        "monSat": "",
+                        "sun": "",
+                    })
+                return out
+        except Exception as exc:  # pragma: no cover
+            log.info("store_config: location lookup failed: %s", exc)
+            return []
+
+    def _company_name_from_sql() -> str:
+        """Company name from SQL (SY_COMP.NAM) - lets the store name resolve
+        without the Counterpoint API."""
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                if "NAM" in get_existing_columns("SY_COMP"):
+                    cur.execute("SELECT TOP (1) NAM FROM SY_COMP")
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        return str(row[0]).strip()
+        except Exception as exc:  # pragma: no cover
+            log.info("store_config: SQL company name failed: %s", exc)
+        return ""
+
+    # ── Categories ────────────────────────────────────────────────────────
+    @app.get("/api/store/categories")
+    def store_categories():
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                item_cols = get_existing_columns("IM_ITEM")
+                ecom_col = next(
+                    (c for c in ("IS_ECOMM_ITEM", "IS_ECOMMERCE", "ECOMM_ITEM") if c in item_cols),
+                    None,
+                )
+                # Only surface categories that actually have sellable web items
+                # (mirrors the product gating below).
+                where = ["CATEG_COD IS NOT NULL", "CATEG_COD <> ''"]
+                if "STAT" in item_cols:
+                    where.append("STAT = 'A'")
+                if ecom_col:
+                    where.append(f"{ecom_col} = 'Y'")
+                cur.execute(f"SELECT DISTINCT CATEG_COD FROM IM_ITEM WHERE {' AND '.join(where)}")
+                codes = sorted({str(r[0]).strip() for r in cur.fetchall() if r[0]})
+
+                # Pretty display names from the category description table when present
+                # (IM_CATEG_COD on most installs); fall back to the code itself.
+                names: dict[str, str] = {}
+                cat_tbl = _first_existing_table(cur, ["IM_CATEG", "IM_CATEG_COD", "IM_CATEGORY"])
+                if cat_tbl:
+                    ccols = get_existing_columns(cat_tbl)
+                    code_col = "CATEG_COD" if "CATEG_COD" in ccols else "COD"
+                    desc_col = "DESCR" if "DESCR" in ccols else code_col
+                    cur.execute(f"SELECT {code_col}, {desc_col} FROM {cat_tbl}")
+                    for r in cur.fetchall():
+                        if r[0] is not None:
+                            code = str(r[0]).strip()
+                            names[code] = str(r[1]).strip() if r[1] else code
+
+                cats: list[dict[str, Any]] = [
+                    {
+                        "id": code,
+                        "name": names.get(code, code),
+                        "tint": _TINTS[i % len(_TINTS)],
+                        "image": _category_image(cur, code),
+                    }
+                    for i, code in enumerate(codes)
+                ]
+                cats.sort(key=lambda c: c["name"].lower())
+                return jsonify(cats)
+        except Exception as exc:  # pragma: no cover
+            log.info("store_categories failed: %s", exc)
+            return jsonify([])
+
+    def _category_image(cur, categ_cod: str) -> str:
+        try:
+            cur.execute(
+                "SELECT TOP (1) ITEM_NO FROM IM_ITEM WHERE CATEG_COD = ? ORDER BY ITEM_NO",
+                categ_cod,
+            )
+            row = cur.fetchone()
+            if row and row.ITEM_NO:
+                return f"/api/store/item-image/{str(row.ITEM_NO).strip()}"
+        except Exception:
+            pass
+        return ""
+
+    # ── Products ──────────────────────────────────────────────────────────
+    @app.get("/api/store/products")
+    def store_products():
+        try:
+            limit = max(1, min(int(request.args.get("limit", 1000)), 5000))
+        except ValueError:
+            limit = 1000
+        category = request.args.get("category", "").strip()
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                cols = get_existing_columns("IM_ITEM")
+                # Optional eCommerce gate - only surface items flagged for web
+                # sale when the column exists; otherwise show active stock items.
+                ecom_col = next(
+                    (c for c in ("IS_ECOMM_ITEM", "IS_ECOMMERCE", "ECOMM_ITEM") if c in cols),
+                    None,
+                )
+                price_col = next((c for c in ("PRC_1", "REG_PRC", "PRC_2") if c in cols), "PRC_1")
+                unit_col = next((c for c in ("SELL_UNIT", "STK_UNIT", "DFLT_UNIT") if c in cols), None)
+                stat_col = "STAT" if "STAT" in cols else None
+
+                select_cols = ["ITEM_NO", "DESCR", "CATEG_COD", price_col]
+                if unit_col:
+                    select_cols.append(unit_col)
+                select_cols = [c for c in dict.fromkeys(select_cols) if c in cols]
+
+                where = ["1=1"]
+                params: list[Any] = []
+                if stat_col:
+                    where.append(f"{stat_col} = 'A'")
+                if ecom_col:
+                    where.append(f"{ecom_col} = 'Y'")
+                if category:
+                    where.append("CATEG_COD = ?")
+                    params.append(category)
+
+                sql = (
+                    f"SELECT TOP ({limit}) {', '.join(select_cols)} FROM IM_ITEM "
+                    f"WHERE {' AND '.join(where)} ORDER BY DESCR"
+                )
+                cur.execute(sql, params)
+                products: list[dict[str, Any]] = []
+                for r in cur.fetchall():
+                    item_no = str(getattr(r, "ITEM_NO", "")).strip()
+                    if not item_no:
+                        continue
+                    price = jsonable(getattr(r, price_col, None)) or 0
+                    unit = (str(getattr(r, unit_col)).strip() if unit_col else "") or "ea"
+                    products.append({
+                        "id": item_no,
+                        "name": (getattr(r, "DESCR", None) or item_no).strip(),
+                        "categoryId": (getattr(r, "CATEG_COD", None) or "").strip(),
+                        "price": float(price),
+                        "unit": unit,
+                        "image": f"/api/store/item-image/{item_no}",
+                    })
+                return jsonify(products)
+        except Exception as exc:  # pragma: no cover
+            log.info("store_products failed: %s", exc)
+            return jsonify([])
+
+    # ── Item image (best-effort proxy, always renders something) ───────────
+    @app.get("/api/store/item-image/<path:item_no>")
+    def store_item_image(item_no: str):
+        item_no = item_no.strip()
+        try:
+            status, body, _err = cp_api_request("GET", f"/Item/{item_no}/Images")
+            filename = _first_image_filename(body)
+            if status == 200 and filename:
+                result = cp_upstream_call("GET", f"/Item/Images/{filename}", None, {})
+                if result.get("status") == 200 and isinstance(result.get("body"), (bytes, bytearray)):
+                    return Response(
+                        bytes(result["body"]),
+                        status=200,
+                        content_type=result.get("content_type") or "image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"},
+                    )
+        except Exception as exc:  # pragma: no cover
+            log.info("item-image %s failed: %s", item_no, exc)
+        return Response(_PLACEHOLDER_SVG, status=200, content_type="image/svg+xml")
+
+    def _first_image_filename(body: Any) -> str | None:
+        """Pull the first image filename out of the varied shapes /Item/{}/Images
+        returns across Counterpoint versions."""
+        items = body
+        if isinstance(body, dict):
+            items = (
+                body.get("Images")
+                or body.get("images")
+                or body.get("ItemImages")
+                or body.get("value")
+                or []
+            )
+        if not isinstance(items, list) or not items:
+            return None
+        first = items[0]
+        if isinstance(first, str):
+            return first
+        if isinstance(first, dict):
+            for k in ("Filename", "FileName", "Name", "ImageName", "filename"):
+                if first.get(k):
+                    return str(first[k])
+        return None
+
+    # ── Order writeback -> Counterpoint Document ──────────────────────────
+    @app.post("/api/store/order")
+    def store_order():
+        payload = request.get_json(silent=True) or {}
+        items = payload.get("items") or []
+        if not items:
+            return jsonify({"ok": False, "message": "No line items in order."}), 400
+
+        customer = payload.get("customer") or {}
+        loc_id = (payload.get("storeId") or config.get("default_loc_id") or "").strip()
+        cust_no = (payload.get("custNo") or config.get("default_cust_no") or "").strip()
+
+        # A reasonable, generic Counterpoint ticket. Different installs require
+        # different header fields; this is the common shape. Hooks in
+        # __CntrPHooks__.py (post_document) can reshape it per deployment.
+        lines = []
+        for it in items:
+            try:
+                qty = float(it.get("qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            if qty <= 0:
+                continue
+            line = {"ITEM_NO": str(it.get("id", "")).strip(), "QTY_SOLD": qty}
+            if it.get("price") is not None:
+                try:
+                    line["PRC"] = float(it["price"])
+                except (TypeError, ValueError):
+                    pass
+            lines.append(line)
+
+        hdr: dict[str, Any] = {"TKT_TYP": "T", "DOC_TYP": "T"}
+        if loc_id:
+            hdr["STK_LOC_ID"] = loc_id
+        if cust_no:
+            hdr["CUST_NO"] = cust_no
+        notes = customer.get("notes")
+
+        document = {
+            "PS_DOC_HDR": hdr,
+            "PS_DOC_LIN": lines,
+            # Echo the web context so a post_document hook / report can use it.
+            "_web": {
+                "customer": customer,
+                "fulfillment": payload.get("fulfillment"),
+                "ref": payload.get("ref"),
+                "notes": notes,
+            },
+        }
+
+        try:
+            status, body, err = cp_api_request("POST", "/Document", json=document)
+        except Exception as exc:  # pragma: no cover
+            log.warning("store_order: CP Document POST raised: %s", exc)
+            status, body, err = 0, None, str(exc)
+
+        doc_id = None
+        if isinstance(body, dict):
+            doc_id = body.get("DocId") or body.get("DOC_ID") or body.get("Id")
+
+        ok = bool(status and 200 <= status < 300)
+        # Always 200 to the storefront: the admin screen is the source of truth
+        # and logs the order regardless; surface CP success/failure in the body.
+        return jsonify({
+            "ok": ok,
+            "ref": payload.get("ref"),
+            "doc_id": doc_id,
+            "counterpoint_status": status,
+            "counterpoint_error": err,
+            "counterpoint_response": body if ok else (body or err),
+        })

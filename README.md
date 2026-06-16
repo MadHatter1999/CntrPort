@@ -9,8 +9,10 @@ A Flask wrapper around the NCR Counterpoint REST API. Every endpoint in the
 exposed as a typed route with **pre / during / post hooks**, so you can
 extend, intercept, cache, or reshape Counterpoint without forking NCR's code.
 
-No UI. Run it next to the Counterpoint API service (usually the same host),
-and your integrations only have to swap ports. The paths match.
+No UI on the wrapper itself. Run it next to the Counterpoint API service
+(usually the same host), and your integrations only have to swap ports. The
+paths match. (An optional storefront PWA lives in
+[`webstore/`](webstore/) - see [Web store](#web-store-webstore).)
 
 > The folder is named `counterpoint-order-entry/` for historical reasons. The
 > content is no longer order-entry-specific.
@@ -41,6 +43,7 @@ and your integrations only have to swap ports. The paths match.
 - [Generic mirror (forward compatibility)](#generic-mirror-forward-compatibility)
 - [Discovery: `/api/cp` manifest](#discovery-apicp-manifest)
 - [Health check](#health-check)
+- [Web store (`webstore/`)](#web-store-webstore)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
 - [Out of scope](#out-of-scope)
@@ -800,6 +803,33 @@ Handy for ops dashboards and integration smoke tests.
 
 A 401 from CP still flips `ok=true`; the service answered, that's the
 point. Only transport errors (timeout, refused, DNS) flip it false.
+
+---
+
+## Web store (`webstore/`)
+
+An optional, installable storefront PWA lives in [`webstore/`](webstore/). It
+turns **whatever is in Counterpoint into a web store**: products, categories,
+pricing, the store name and locations are all read live from CP - nothing is
+hard-coded. It's served separately (static build) and talks to this wrapper.
+
+`store_api.py` adds the storefront aggregation endpoints (registered from
+`app.py`); they shape Counterpoint into clean JSON and write orders back as
+Documents:
+
+| Endpoint                          | Returns / does                                   |
+| --------------------------------- | ------------------------------------------------ |
+| `GET /api/store/config`           | store name, currency, tax rate, locations        |
+| `GET /api/store/categories`       | `[{ id, name, image, tint }]`                    |
+| `GET /api/store/products`         | `[{ id, name, categoryId, price, unit, image }]` |
+| `GET /api/store/item-image/<id>`  | item photo (or an SVG placeholder)               |
+| `POST /api/store/order`           | writes a Counterpoint `Document` (ticket)        |
+
+Catalog reads use the read-only SQL helpers; the image proxy and order
+writeback use the Counterpoint API. Configure the few presentation values CP
+doesn't model via `.env` (`STORE_NAME`, `STORE_CURRENCY`, `STORE_TAX_RATE`,
+`STORE_DEFAULT_LOC_ID`, `STORE_DEFAULT_CUST_NO`). See
+[`webstore/README.md`](webstore/README.md) to run the storefront.
 
 ---
 
