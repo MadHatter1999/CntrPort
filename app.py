@@ -94,6 +94,9 @@ if STORE_TAX_RATE > 1:
     STORE_TAX_RATE = STORE_TAX_RATE / 100.0
 STORE_DEFAULT_LOC_ID  = _env("STORE_DEFAULT_LOC_ID")        # location for web orders
 STORE_DEFAULT_CUST_NO = _env("STORE_DEFAULT_CUST_NO")       # walk-in/web customer no
+# Store (STR_ID) used to scope store-specific planned promotions. Defaults to the
+# web order location when unset (they share names on most installs).
+STORE_PROMO_STR_ID    = _env("STORE_PROMO_STR_ID")
 
 FLASK_HOST  = _env("FLASK_HOST", "0.0.0.0")
 FLASK_PORT  = _env_int("FLASK_PORT", 5000)
@@ -920,6 +923,7 @@ store_api.register_store_routes(
         "tax_rate": STORE_TAX_RATE,
         "default_loc_id": STORE_DEFAULT_LOC_ID,
         "default_cust_no": STORE_DEFAULT_CUST_NO,
+        "promo_str_id": STORE_PROMO_STR_ID or STORE_DEFAULT_LOC_ID,
     },
 )
 

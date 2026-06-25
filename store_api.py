@@ -237,6 +237,8 @@ def register_store_routes(
         except ValueError:
             limit = 1000
         category = request.args.get("category", "").strip()
+        # Store the web sells from, used to scope store-specific planned promos.
+        promo_str = str(config.get("promo_str_id") or "").strip()
         try:
             with get_sql_connection() as cn:
                 cur = cn.cursor()
@@ -247,45 +249,76 @@ def register_store_routes(
                     (c for c in ("IS_ECOMM_ITEM", "IS_ECOMMERCE", "ECOMM_ITEM") if c in cols),
                     None,
                 )
+                # Regular price. Kit items (IM_KIT_PAR) are priced at the parent,
+                # which carries this price - no component summing needed.
                 price_col = next((c for c in ("PRC_1", "REG_PRC", "PRC_2") if c in cols), "PRC_1")
                 unit_col = next((c for c in ("SELL_UNIT", "STK_UNIT", "DFLT_UNIT") if c in cols), None)
                 stat_col = "STAT" if "STAT" in cols else None
 
-                select_cols = ["ITEM_NO", "DESCR", "CATEG_COD", price_col]
+                sel = ["i.ITEM_NO", "i.DESCR", "i.CATEG_COD", f"i.{price_col} AS reg_prc"]
                 if unit_col:
-                    select_cols.append(unit_col)
-                select_cols = [c for c in dict.fromkeys(select_cols) if c in cols]
+                    sel.append(f"i.{unit_col} AS sell_unit")
+
+                # Lowest active planned-promo price for today (CP "Planned Promotions":
+                # IM_PLAN_PROMO_RUL.PROMO_PRC, gated by the group's BEG_DAT..END_DAT
+                # window and store). Scheduled promos light up automatically when their
+                # window opens. Skipped gracefully if the promo tables aren't present.
+                promo_params: list[Any] = []
+                if _table_exists(cur, "IM_PLAN_PROMO_RUL") and _table_exists(cur, "IM_PLAN_PROMO_GRP"):
+                    store_cond = ""
+                    if promo_str:
+                        store_cond = " AND (g.STR_ID = ? OR g.STR_ID IS NULL OR g.STR_ID = '')"
+                        promo_params.append(promo_str)
+                    sel.append(
+                        "(SELECT MIN(r.PROMO_PRC) FROM IM_PLAN_PROMO_RUL r "
+                        "JOIN IM_PLAN_PROMO_GRP g ON g.GRP_COD = r.GRP_COD "
+                        "WHERE r.ITEM_NO = i.ITEM_NO "
+                        "AND CAST(GETDATE() AS date) BETWEEN CAST(g.BEG_DAT AS date) AND CAST(g.END_DAT AS date)"
+                        f"{store_cond}) AS promo_prc"
+                    )
+                else:
+                    sel.append("CAST(NULL AS decimal(15,4)) AS promo_prc")
 
                 where = ["1=1"]
-                params: list[Any] = []
+                tail_params: list[Any] = []
                 if stat_col:
-                    where.append(f"{stat_col} = 'A'")
+                    where.append(f"i.{stat_col} = 'A'")
                 if ecom_col:
-                    where.append(f"{ecom_col} = 'Y'")
+                    where.append(f"i.{ecom_col} = 'Y'")
                 if category:
-                    where.append("CATEG_COD = ?")
-                    params.append(category)
+                    where.append("i.CATEG_COD = ?")
+                    tail_params.append(category)
 
                 sql = (
-                    f"SELECT TOP ({limit}) {', '.join(select_cols)} FROM IM_ITEM "
-                    f"WHERE {' AND '.join(where)} ORDER BY DESCR"
+                    f"SELECT TOP ({limit}) {', '.join(sel)} FROM IM_ITEM i "
+                    f"WHERE {' AND '.join(where)} ORDER BY i.DESCR"
                 )
-                cur.execute(sql, params)
+                # SELECT params (promo store) bind before WHERE params (category).
+                cur.execute(sql, promo_params + tail_params)
                 products: list[dict[str, Any]] = []
                 for r in cur.fetchall():
                     item_no = str(getattr(r, "ITEM_NO", "")).strip()
                     if not item_no:
                         continue
-                    price = jsonable(getattr(r, price_col, None)) or 0
-                    unit = (str(getattr(r, unit_col)).strip() if unit_col else "") or "ea"
-                    products.append({
+                    reg = float(jsonable(getattr(r, "reg_prc", None)) or 0)
+                    unit = (str(getattr(r, "sell_unit")).strip() if unit_col else "") or "ea"
+                    rec: dict[str, Any] = {
                         "id": item_no,
                         "name": (getattr(r, "DESCR", None) or item_no).strip(),
                         "categoryId": (getattr(r, "CATEG_COD", None) or "").strip(),
-                        "price": float(price),
+                        "price": reg,
                         "unit": unit,
                         "image": f"/api/store/item-image/{item_no}",
-                    })
+                    }
+                    # Active promo beats the regular price -> show sale + struck-out was.
+                    promo_raw = jsonable(getattr(r, "promo_prc", None))
+                    if promo_raw is not None:
+                        promo = float(promo_raw)
+                        if 0 < promo < reg:
+                            rec["price"] = promo
+                            rec["wasPrice"] = reg
+                            rec["badge"] = "sale"
+                    products.append(rec)
                 return jsonify(products)
         except Exception as exc:  # pragma: no cover
             log.info("store_products failed: %s", exc)
