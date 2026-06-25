@@ -6,7 +6,10 @@
 *.key
 *.pfx
 *.crt
-
+.firebaserc
+firebase.json 
+public/
+Webstore/
 # --- Python -------------------------------------------------------------------
 __pycache__/
 *.py[cod]
