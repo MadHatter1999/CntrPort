@@ -34,7 +34,7 @@ htmlcov/
 coverage.xml
 *.cover
 .cache/
-
+examples/*
 # --- Virtual environments -----------------------------------------------------
 .venv/
 venv/
