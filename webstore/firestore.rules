@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// European New Market — Firestore security rules.
+// European New Market - Firestore security rules.
 // Customers (unauthenticated) may CREATE orders and Meest requests from the
 // storefront. Only signed-in staff may read, update or delete them. No card
 // numbers or CVCs are ever written here (only brand + last4).

@@ -4,7 +4,7 @@ import { icon } from "../lib/icons";
 /**
  * Admin access control. With Firebase configured the admin is locked to real
  * Firebase Auth accounts (email/password). Without it, the app falls back to a
- * lightweight demo gate so the mockup is still usable — clearly labelled so it's
+ * lightweight demo gate so the mockup is still usable - clearly labelled so it's
  * never mistaken for real security.
  */
 const DEMO_KEY = "enm.admin.session";
@@ -54,7 +54,7 @@ export function currentUserLabel(): string {
 function renderLogin(root: HTMLElement, mode: "demo" | "firebase"): void {
   const note =
     mode === "demo"
-      ? `<p class="login__note">${icon("lock", 14)} Demo mode — Firebase isn't configured, so any details sign you in. Add a Firebase project to require real staff accounts.</p>`
+      ? `<p class="login__note">${icon("lock", 14)} Demo mode - Firebase isn't configured, so any details sign you in. Add a Firebase project to require real staff accounts.</p>`
       : `<p class="login__note">${icon("lock", 14)} Authorized staff only. Access is protected by Firebase Authentication.</p>`;
 
   root.className = "";

@@ -2,7 +2,7 @@ import type { Auth } from "firebase/auth";
 import type { Firestore } from "firebase/firestore";
 
 /**
- * Firebase wiring. Config comes from Vite env vars (`.env` — never commit real
+ * Firebase wiring. Config comes from Vite env vars (`.env` - never commit real
  * keys), so the repo stays credential-free. When unconfigured the app runs in
  * "local mode": data lives in localStorage and the admin uses a demo gate, so
  * the mockup works with zero setup.

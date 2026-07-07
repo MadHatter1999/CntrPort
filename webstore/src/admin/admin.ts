@@ -840,7 +840,7 @@ function removeItem(section: Section, id: string): void {
   const i = (arr as { id: string }[]).findIndex((x) => x.id === id);
   if (i >= 0) arr.splice(i, 1);
   persist(section);
-  // Orders also live in Firestore — remove the remote doc.
+  // Orders also live in Firestore - remove the remote doc.
   if (section === "orders") removeOrder(id);
 }
 

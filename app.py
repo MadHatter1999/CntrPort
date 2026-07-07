@@ -75,12 +75,40 @@ CNTRPORT_AUTH_EXEMPT_PATHS = {
     p.strip() for p in _env("CNTRPORT_AUTH_EXEMPT_PATHS", "/api/health").split(",")
     if p.strip()
 }
+# Path *prefixes* that bypass the wrapper API key check. Item images are loaded
+# by the browser via plain <img src> tags, which cannot carry the X-API-Key
+# header, so they must be reachable without it - the bytes are just public
+# product photos. Comma-separated list of prefixes.
+CNTRPORT_AUTH_EXEMPT_PREFIXES = tuple(
+    p.strip() for p in _env(
+        "CNTRPORT_AUTH_EXEMPT_PREFIXES", "/api/store/item-image/"
+    ).split(",")
+    if p.strip()
+)
 
 CP_SQL_SERVER      = _env("CP_SQL_SERVER", ".")
 CP_SQL_DATABASE    = _env("CP_SQL_DATABASE")
 CP_SQL_USER        = _env("CP_SQL_USER", "sa")
 CP_SQL_PASSWORD    = _env("CP_SQL_PASSWORD")
 CP_SQL_DRIVER      = _env("CP_SQL_DRIVER", "ODBC Driver 17 for SQL Server")
+
+# Counterpoint keeps item photos on disk under the company's Configuration
+# folder, by convention:
+#   <Toplevel>\<Company>\Configuration\ItemImages\<ITEM_NO>.<ext>
+# The storefront image API serves these files directly - the correct image
+# for the item, from the CP server itself - and only falls back to the CP web
+# API when no local file exists. CP_ITEM_IMAGE_DIR overrides the full path;
+# otherwise it's derived from the toplevel dir + the company alias so pointing
+# at a different server/company is a one-line env change (never hard-coded).
+CP_TOPLEVEL_DIR    = _env(
+    "CP_TOPLEVEL_DIR",
+    r"C:\Program Files (x86)\Radiant Systems\CounterPoint\CPSQL.1\Toplevel",
+)
+CP_ITEM_IMAGE_DIR  = _env("CP_ITEM_IMAGE_DIR")
+if not CP_ITEM_IMAGE_DIR and CP_TOPLEVEL_DIR and CP_COMPANY_ALIAS:
+    CP_ITEM_IMAGE_DIR = os.path.join(
+        CP_TOPLEVEL_DIR, CP_COMPANY_ALIAS, "Configuration", "ItemImages"
+    )
 
 # Storefront (webstore/) presentation + order-writeback config. The catalog,
 # categories and locations are read live from Counterpoint; these cover the few
@@ -128,6 +156,8 @@ def _require_wrapper_api_key():
     if not CNTRPORT_API_KEY:
         return None
     if request.path in CNTRPORT_AUTH_EXEMPT_PATHS:
+        return None
+    if request.path.startswith(CNTRPORT_AUTH_EXEMPT_PREFIXES):
         return None
     supplied = request.headers.get(CNTRPORT_API_KEY_HEADER, "")
     if not supplied or not secrets.compare_digest(supplied, CNTRPORT_API_KEY):
@@ -924,6 +954,7 @@ store_api.register_store_routes(
         "default_loc_id": STORE_DEFAULT_LOC_ID,
         "default_cust_no": STORE_DEFAULT_CUST_NO,
         "promo_str_id": STORE_PROMO_STR_ID or STORE_DEFAULT_LOC_ID,
+        "item_image_dir": CP_ITEM_IMAGE_DIR,
     },
 )
 

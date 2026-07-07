@@ -15,7 +15,7 @@ export const languages: LangMeta[] = [{ code: "en", native: "English", flag: "ðŸ
 type Dict = Record<string, string>;
 
 const en: Dict = {
-  "brand.tagline": "Shop online â€” pickup or delivery",
+  "brand.tagline": "Shop online - pickup or delivery",
 
   "nav.home": "Home",
   "nav.catalog": "Catalog",

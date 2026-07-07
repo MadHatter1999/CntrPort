@@ -379,5 +379,5 @@ export function renderBadges(): void {
 
 export function syncDocTitle(): void {
   const name = getConfig().name || "Web Store";
-  document.title = `${name} — ${t("brand.tagline")}`;
+  document.title = `${name} - ${t("brand.tagline")}`;
 }

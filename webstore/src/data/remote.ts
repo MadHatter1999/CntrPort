@@ -12,7 +12,7 @@ export function remoteUpsert(collName: string, id: string, data: unknown): void 
     const [{ db }, { doc, setDoc }] = await Promise.all([loadFirebase(), import("firebase/firestore")]);
     await setDoc(doc(db, collName, id), data as Record<string, unknown>);
   })().catch(() => {
-    /* offline / rules — localStorage already holds the write */
+    /* offline / rules - localStorage already holds the write */
   });
 }
 
@@ -39,7 +39,7 @@ export function remoteSubscribe<T>(collName: string, onChange: (rows: T[]) => vo
       q,
       (snap) => onChange(snap.docs.map((d) => d.data() as T)),
       () => {
-        /* permission / network error — stay on local data */
+        /* permission / network error - stay on local data */
       },
     );
   })().catch(() => {});

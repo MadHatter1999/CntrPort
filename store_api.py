@@ -25,6 +25,7 @@ intact. SQL is read-only.
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 from typing import Any, Callable
 
@@ -324,10 +325,50 @@ def register_store_routes(
             log.info("store_products failed: %s", exc)
             return jsonify([])
 
-    # ── Item image (best-effort proxy, always renders something) ───────────
+    # ── Item image (best-effort, always renders something) ─────────────────
+    # Order of preference:
+    #   1. the file on the CP server (Configuration\ItemImages\<ITEM_NO>.<ext>)
+    #   2. the CP web API image proxy
+    #   3. an inline "No image" SVG placeholder
+    _IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+    def _local_item_image(item_no: str) -> tuple[bytes, str] | None:
+        """Serve <ITEM_NO>.<ext> straight from the Counterpoint ItemImages
+        directory when present. Returns (bytes, content_type) or None."""
+        base_dir = config.get("item_image_dir") or ""
+        if not base_dir or not os.path.isdir(base_dir):
+            return None
+        # <path:item_no> can contain separators; collapse to a bare filename so
+        # a crafted id can't escape the ItemImages directory.
+        safe = os.path.basename(item_no.strip())
+        if not safe or safe in (".", "..") or "/" in safe or "\\" in safe:
+            return None
+        for ext in _IMG_EXTS:
+            path = os.path.join(base_dir, safe + ext)
+            if os.path.isfile(path):
+                try:
+                    with open(path, "rb") as fh:
+                        data = fh.read()
+                except OSError:
+                    continue
+                ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+                return data, ctype
+        return None
+
     @app.get("/api/store/item-image/<path:item_no>")
     def store_item_image(item_no: str):
         item_no = item_no.strip()
+
+        local = _local_item_image(item_no)
+        if local:
+            data, ctype = local
+            return Response(
+                data,
+                status=200,
+                content_type=ctype,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+
         try:
             status, body, _err = cp_api_request("GET", f"/Item/{item_no}/Images")
             filename = _first_image_filename(body)

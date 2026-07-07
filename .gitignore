@@ -45,7 +45,7 @@ ENV/
 # --- Flask --------------------------------------------------------------------
 instance/
 .webassets-cache
-
+webstore/public/item-images/*
 # --- Editors / IDEs -----------------------------------------------------------
 .vscode/
 .idea/
