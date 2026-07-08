@@ -86,6 +86,7 @@ const en: Dict = {
   "checkout.notesPh": "Buzzer code, allergies, gift message…",
   "checkout.payment": "Payment",
   "checkout.testMode": "Demo mode - enter any card, you won't be charged.",
+  "checkout.securePayment": "Secure payment via {provider}",
   "checkout.cardName": "Name on card",
   "checkout.card": "Card number",
   "checkout.expiry": "Expiry",

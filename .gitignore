@@ -6,6 +6,8 @@
 *.key
 *.pfx
 *.crt
+# Admin-configured payment-processor credentials (gateway secret keys).
+payments.json
 
 # --- Python -------------------------------------------------------------------
 __pycache__/

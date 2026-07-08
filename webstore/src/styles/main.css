@@ -150,6 +150,9 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
   flex: 0 0 auto;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.14));
 }
+/* On dark surfaces the logo's black parts turn white (reds are preserved via
+   the hue-rotate) - the SVG file itself is never touched. */
+.footer .brand__badge { filter: invert(1) hue-rotate(180deg); }
 .brand__text { display: flex; flex-direction: column; }
 .brand__name { font-weight: 800; font-size: 1.04rem; letter-spacing: -0.02em; }
 .brand__tag { font-size: 0.72rem; color: var(--muted); }
@@ -1016,6 +1019,30 @@ textarea.co-input { resize: vertical; }
   margin-bottom: 14px;
 }
 .co__test .icon { flex: 0 0 auto; }
+
+/* Live-processor banner (mirrors .co__test but brand-coloured). */
+.co__live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f6efe0;
+  border: 1px solid #e6d3a8;
+  color: #7a5e1a;
+  padding: 9px 12px;
+  border-radius: var(--r-sm);
+  font-size: 0.82rem;
+  margin-bottom: 14px;
+}
+.co__live .icon { flex: 0 0 auto; }
+.co__env {
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e6d3a8;
+}
 
 .co__summary {
   background: var(--surface);

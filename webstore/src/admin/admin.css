@@ -24,7 +24,9 @@ button, a, label, input { touch-action: manipulation; }
 /* Sidebar */
 .side { background: var(--sidebar); color: #e8e0d6; display: flex; flex-direction: column; padding: 16px 12px; gap: 4px; }
 .side__brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 14px; }
-.side__brand img { width: 36px; height: 36px; border-radius: 50%; }
+/* Sidebar is dark: turn the logo's black parts white (reds preserved via
+   hue-rotate). The SVG file is never modified. */
+.side__brand img { width: 36px; height: 36px; border-radius: 50%; filter: invert(1) hue-rotate(180deg); }
 .side__brand b { font-size: 0.95rem; }
 .side__brand small { display: block; color: #b6ab9c; font-weight: 400; font-size: 0.72rem; }
 .navbtn {
@@ -79,6 +81,7 @@ tr:hover td { background: #fcfbf8; }
 .pill--new { background: #e3f1e4; color: #2e7d32; }
 .pill--popular { background: #fbe3e4; color: var(--brand-dark); }
 .pill--sale { background: #fdf0cf; color: #7a5a00; }
+.pill--live { background: #e6f4ea; color: var(--ok); }
 .muted { color: var(--muted); }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 
@@ -306,4 +309,36 @@ tr:hover td { background: #fcfbf8; }
   .kpi { padding: 13px; }
   .kpi__val { font-size: 1.3rem; }
   .chart__x { display: none; }
+}
+
+/* ── Payments ─────────────────────────────────────────────── */
+.paycfg { max-width: 620px; }
+.pay-status { margin-bottom: 6px; }
+.pay-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.pay-badge--live { background: #e6f4ea; color: var(--ok); }
+.pay-badge--demo { background: #eef1f4; color: var(--muted); }
+.pay-badge--warn { background: #fdf2d6; color: #8a6d1a; }
+.pay-enable {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pay-enable input { width: 20px; height: 20px; }
+.fld .req { color: var(--brand); font-style: normal; }
+.pay-secure {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: 4px;
 }

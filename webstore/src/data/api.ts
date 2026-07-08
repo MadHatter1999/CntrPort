@@ -25,7 +25,7 @@ export interface StoreConfig {
 
 const DEFAULT_CONFIG: StoreConfig = { name: "Web Store", currency: "USD", taxRate: 0, stores: [] };
 
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   return API_KEY ? { [API_KEY_HEADER]: API_KEY } : {};
 }
 

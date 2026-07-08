@@ -24,6 +24,7 @@ intact. SQL is read-only.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Callable
@@ -524,3 +525,121 @@ def register_store_routes(
             "counterpoint_error": err,
             "counterpoint_response": body if ok else (body or err),
         })
+
+    # ── Payment processor config ──────────────────────────────────────────
+    # Stored server-side (holds gateway secret keys) and NEVER shipped whole to
+    # the browser. The public storefront reads only /payments/status (secret-
+    # free); the admin reads/writes /payments/config behind the wrapper API key.
+    # When no provider is enabled + fully configured, status is "demo" and the
+    # storefront keeps its existing demo checkout.
+    def _payments_path() -> str:
+        return config.get("payments_config_path") or ""
+
+    def _default_payments() -> dict[str, Any]:
+        return {"provider": "", "enabled": False, "environment": "sandbox",
+                "values": {}, "meta": {"secret": [], "required": []}}
+
+    def _load_payments() -> dict[str, Any]:
+        path = _payments_path()
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict):
+                    return data
+            except (OSError, ValueError) as exc:  # pragma: no cover
+                log.warning("payments config read failed: %s", exc)
+        return _default_payments()
+
+    def _save_payments(cfg: dict[str, Any]) -> bool:
+        path = _payments_path()
+        if not path:
+            return False
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(cfg, fh, indent=1)
+            return True
+        except OSError as exc:  # pragma: no cover
+            log.warning("payments config write failed: %s", exc)
+            return False
+
+    def _secret_keys(cfg: dict[str, Any]) -> set[str]:
+        return set((cfg.get("meta") or {}).get("secret") or [])
+
+    def _payment_is_live(cfg: dict[str, Any]) -> bool:
+        """Live only when explicitly enabled AND every required field is filled
+        - otherwise the storefront falls back to demo."""
+        if not cfg.get("enabled") or not cfg.get("provider"):
+            return False
+        values = cfg.get("values") or {}
+        required = (cfg.get("meta") or {}).get("required") or []
+        return all(str(values.get(k, "")).strip() for k in required)
+
+    @app.get("/api/store/payments/status")
+    def payments_status():
+        cfg = _load_payments()
+        live = _payment_is_live(cfg)
+        secrets = _secret_keys(cfg)
+        values = cfg.get("values") or {}
+        public = {k: v for k, v in values.items() if k not in secrets and v}
+        return jsonify({
+            "mode": "live" if live else "demo",
+            "provider": cfg.get("provider") or "",
+            "environment": cfg.get("environment") or "",
+            "publicConfig": public if live else {},
+        })
+
+    @app.get("/api/store/payments/config")
+    def payments_config_get():
+        cfg = _load_payments()
+        secrets = _secret_keys(cfg)
+        values = cfg.get("values") or {}
+        return jsonify({
+            "enabled": bool(cfg.get("enabled")),
+            "provider": cfg.get("provider") or "",
+            "environment": cfg.get("environment") or "sandbox",
+            "live": _payment_is_live(cfg),
+            # Secret VALUES are never returned - only whether each is set.
+            "values": {k: v for k, v in values.items() if k not in secrets},
+            "secretsSet": {k: bool(str(values.get(k, "")).strip()) for k in secrets},
+        })
+
+    @app.put("/api/store/payments/config")
+    def payments_config_put():
+        body = request.get_json(silent=True) or {}
+        provider = str(body.get("provider") or "").strip()
+        environment = str(body.get("environment") or "sandbox").strip()
+        enabled = bool(body.get("enabled"))
+        in_values = body.get("values") or {}
+        meta = body.get("meta") or {}
+        secret_keys = set(meta.get("secret") or [])
+
+        current = _load_payments()
+        # Keep prior secret values only when the provider is unchanged.
+        cur_values = (current.get("values") or {}) if current.get("provider") == provider else {}
+
+        merged: dict[str, Any] = {}
+        for k, v in in_values.items():
+            v = "" if v is None else str(v).strip()
+            # A blank secret means "keep what's already saved" so the admin never
+            # has to re-enter secrets; blank non-secret clears the field.
+            if k in secret_keys and v == "":
+                if cur_values.get(k):
+                    merged[k] = cur_values[k]
+            else:
+                merged[k] = v
+
+        cfg = {
+            "provider": provider,
+            "enabled": enabled,
+            "environment": environment,
+            "values": merged,
+            "meta": {
+                "secret": sorted(secret_keys),
+                "required": list(meta.get("required") or []),
+            },
+        }
+        ok = _save_payments(cfg)
+        return jsonify({"ok": ok, "live": _payment_is_live(cfg) if ok else False}), (
+            200 if ok else 500
+        )

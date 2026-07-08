@@ -81,7 +81,11 @@ CNTRPORT_AUTH_EXEMPT_PATHS = {
 # product photos. Comma-separated list of prefixes.
 CNTRPORT_AUTH_EXEMPT_PREFIXES = tuple(
     p.strip() for p in _env(
-        "CNTRPORT_AUTH_EXEMPT_PREFIXES", "/api/store/item-image/"
+        "CNTRPORT_AUTH_EXEMPT_PREFIXES",
+        # item images load via header-less <img>; the payment *status* is a
+        # secret-free read the public storefront needs to pick live vs demo
+        # checkout. The admin payment *config* write stays gated.
+        "/api/store/item-image/,/api/store/payments/status",
     ).split(",")
     if p.strip()
 )
@@ -116,6 +120,14 @@ if not CP_ITEM_IMAGE_DIR and CP_TOPLEVEL_DIR and CP_COMPANY_ALIAS:
 CP_ITEM_PLACEHOLDER_DIR = _env("CP_ITEM_PLACEHOLDER_DIR")
 if not CP_ITEM_PLACEHOLDER_DIR and CP_ITEM_IMAGE_DIR:
     CP_ITEM_PLACEHOLDER_DIR = os.path.join(CP_ITEM_IMAGE_DIR, "_placeholders")
+
+# Where the admin-configured payment-processor settings are stored (JSON on the
+# server, never in the browser bundle, since it holds gateway secret keys). Git-
+# ignored. The public storefront only ever sees the secret-free status view.
+CP_PAYMENTS_CONFIG_PATH = _env(
+    "CP_PAYMENTS_CONFIG_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "payments.json"),
+)
 
 # Storefront (webstore/) presentation + order-writeback config. The catalog,
 # categories and locations are read live from Counterpoint; these cover the few
@@ -963,6 +975,7 @@ store_api.register_store_routes(
         "promo_str_id": STORE_PROMO_STR_ID or STORE_DEFAULT_LOC_ID,
         "item_image_dir": CP_ITEM_IMAGE_DIR,
         "item_placeholder_dir": CP_ITEM_PLACEHOLDER_DIR,
+        "payments_config_path": CP_PAYMENTS_CONFIG_PATH,
     },
 )
 

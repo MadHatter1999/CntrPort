@@ -1,6 +1,7 @@
 import { state, setCheckoutOpen, clearCart } from "../state/store";
 import { getProducts, getStores, getConfig } from "../data/cms";
 import { postOrder } from "../data/api";
+import { fetchPaymentStatus, providerLabel, type PaymentStatus } from "../data/payments";
 import { t } from "../i18n";
 import { money } from "../lib/format";
 import { esc, $ } from "../lib/dom";
@@ -21,6 +22,10 @@ import {
 /** When set, the panel shows the confirmation screen instead of the form. */
 let placed: Order | null = null;
 let fulfillment: Fulfillment = "pickup";
+
+// Live vs demo checkout, decided by the admin-configured processor. Defaults to
+// demo and is refreshed (secret-free) each time checkout opens.
+let payStatus: PaymentStatus = { mode: "demo", provider: "", environment: "", publicConfig: {} };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -51,6 +56,12 @@ export function openCheckout(): void {
   fulfillment = "pickup";
   renderCheckout();
   setCheckoutOpen(true);
+  // Refresh the live/demo decision from the server (secret-free). Re-render the
+  // form once known so the payment section reflects the configured processor.
+  void fetchPaymentStatus().then((s) => {
+    payStatus = s;
+    if (!placed) renderCheckout();
+  });
 }
 
 export function closeCheckout(): void {
@@ -157,7 +168,11 @@ function formHTML(): string {
 
       <section class="co__sec">
         <h3>${icon("lock", 18)} ${esc(t("checkout.payment"))}</h3>
-        <p class="co__test">${icon("card", 16)} ${esc(t("checkout.testMode"))}</p>
+        ${
+          payStatus.mode === "live"
+            ? `<p class="co__live">${icon("lock", 16)} ${esc(t("checkout.securePayment", { provider: providerLabel(payStatus.provider) }))}${payStatus.environment ? ` <span class="co__env">${esc(payStatus.environment)}</span>` : ""}</p>`
+            : `<p class="co__test">${icon("card", 16)} ${esc(t("checkout.testMode"))}</p>`
+        }
         ${fld(t("checkout.cardName"), "cardName")}
         ${fld(t("checkout.card"), "card", "text", 'inputmode="numeric" maxlength="19"', "4242 4242 4242 4242")}
         <div class="co__grid2">
@@ -174,7 +189,7 @@ function formHTML(): string {
       <button type="submit" class="btn btn--primary btn--block co__place" data-co-place>
         ${esc(t("checkout.place", { total: money(t0.total, state.lang) }))}
       </button>
-      <p class="co__secure">${icon("lock", 14)} ${esc(t("checkout.testMode"))}</p>
+      <p class="co__secure">${icon("lock", 14)} ${esc(payStatus.mode === "live" ? t("checkout.securePayment", { provider: providerLabel(payStatus.provider) }) : t("checkout.testMode"))}</p>
     </aside>
   </form>`;
 }
@@ -312,9 +327,21 @@ function placeOrder(form: HTMLFormElement): void {
     shipping: t0.shipping,
     tax: t0.tax,
     total: t0.total,
-    payment: { method: "card", brand: cardBrand(cardNo), last4: cardNo.replace(/\D/g, "").slice(-4) },
+    payment: {
+      method: "card",
+      brand: cardBrand(cardNo),
+      last4: cardNo.replace(/\D/g, "").slice(-4),
+      mode: payStatus.mode,
+      provider: payStatus.mode === "live" ? payStatus.provider : undefined,
+    },
     lang: state.lang,
   };
+
+  // NOTE: In live mode this records the order against the configured processor,
+  // but the actual charge/tokenization is a per-provider server integration that
+  // must be wired in (the storefront must never handle raw PANs for a live
+  // gateway - use the provider's hosted fields / tokenization). Until that seam
+  // is implemented, treat "live" as "configured" rather than "charged".
 
   // Record the order locally first - the admin Orders screen is the source of
   // truth and must capture every checkout even if the Counterpoint write fails.

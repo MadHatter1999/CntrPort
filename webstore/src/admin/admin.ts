@@ -25,6 +25,14 @@ import {
   type OrderStatus,
 } from "../data/orders";
 import { requireAuth, signOutAdmin, currentUserLabel } from "./auth";
+import {
+  PAYMENT_PROVIDERS,
+  getProvider,
+  providerLabel,
+  fetchPaymentConfig,
+  savePaymentConfig,
+  type PaymentConfigView,
+} from "../data/payments";
 import { translate, languages } from "../i18n";
 import { slideField } from "../lib/labels";
 import { esc } from "../lib/dom";
@@ -75,6 +83,7 @@ type Section =
   | "categories"
   | "stores"
   | "slides"
+  | "payments"
   | "settings";
 const view: {
   section: Section;
@@ -87,6 +96,11 @@ const view: {
   query: "",
   statusFilter: "all",
 };
+
+// Payments: server-held config (secrets redacted) + the in-form provider/env
+// selection (before Save). Loaded once at startup, refreshed after each save.
+let payCfg: PaymentConfigView | null = null;
+const payForm: { provider: string; environment: string } = { provider: "", environment: "" };
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   new: "New",
@@ -189,6 +203,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "categories", label: "Categories" },
   { id: "stores", label: "Locations" },
   { id: "slides", label: "Carousel" },
+  { id: "payments", label: "Payments" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -202,7 +217,7 @@ function sidebar(): string {
   };
   return `<aside class="side">
     <div class="side__brand">
-      <img src="/favicon.svg" alt="" />
+      <img class="brand__badge" src="/favicon.svg" alt="" />
       <div><b>${esc(getConfig().name)} Admin</b><small>internal tool</small></div>
     </div>
     ${SECTIONS.map(
@@ -458,7 +473,11 @@ function formOrder(o: Order | undefined): string {
       </div>
       <div class="panelbox">
         <h4>Payment</h4>
-        <p>${esc(o.payment.brand)} ····&nbsp;${esc(o.payment.last4)} <span class="pill">demo</span></p>
+        <p>${esc(o.payment.brand)} ····&nbsp;${esc(o.payment.last4)} ${
+          o.payment.mode === "live"
+            ? `<span class="pill pill--live">${esc(providerLabel(o.payment.provider || ""))}</span>`
+            : `<span class="pill">demo</span>`
+        }</p>
         <dl class="paydl">
           <div><dt>Subtotal</dt><dd>${fmtMoney(o.subtotal)}</dd></div>
           <div><dt>${o.fulfillment === "pickup" ? "Pickup" : "Delivery"}</dt><dd>${o.shipping ? fmtMoney(o.shipping) : "Free"}</dd></div>
@@ -610,6 +629,76 @@ function dashboardPanel(): string {
     </div>`;
 }
 
+// ── Payments ─────────────────────────────────────────────────────
+function paymentsPanel(): string {
+  const cfg = payCfg;
+  const selected = payForm.provider || cfg?.provider || "";
+  const prov = getProvider(selected);
+  const savedForThis = cfg && cfg.provider === selected ? cfg : null;
+  const envs = prov?.environments ?? [];
+  const selectedEnv = payForm.environment || savedForThis?.environment || envs[0]?.value || "";
+
+  // Status: live only when saved + enabled + fully configured; otherwise demo.
+  let status: string;
+  if (savedForThis?.live) {
+    status = `<span class="pay-badge pay-badge--live">${icon("card", 14)} Live · ${esc(providerLabel(cfg!.provider))} (${esc(cfg!.environment)})</span>`;
+  } else if (savedForThis?.enabled && savedForThis?.provider) {
+    status = `<span class="pay-badge pay-badge--warn">Enabled, but required fields are missing — still demo</span>`;
+  } else {
+    status = `<span class="pay-badge pay-badge--demo">Demo mode</span>`;
+  }
+
+  const providerOpts = [
+    `<option value="">— Demo mode (no live processor) —</option>`,
+    ...PAYMENT_PROVIDERS.map(
+      (p) => `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${esc(p.label)}</option>`,
+    ),
+  ].join("");
+
+  let body = "";
+  if (prov) {
+    const envOpts = envs
+      .map((e) => `<option value="${e.value}" ${e.value === selectedEnv ? "selected" : ""}>${esc(e.label)}</option>`)
+      .join("");
+    const fields = prov.fields
+      .map((f) => {
+        const val = !f.secret ? esc(savedForThis?.values?.[f.key] ?? "") : "";
+        const isSet = f.secret && !!savedForThis?.secretsSet?.[f.key];
+        const ph = f.secret && isSet ? "•••••••• saved — leave blank to keep" : esc(f.placeholder || "");
+        const tags = `${f.required ? ' <em class="req">*</em>' : ""}${f.secret ? ' <span class="pill">secret</span>' : ""}`;
+        return `<label class="fld"><span>${esc(f.label)}${tags}</span>
+          <input data-pay-field="${f.key}" type="${f.secret ? "password" : "text"}"
+                 value="${val}" placeholder="${ph}" autocomplete="off" spellcheck="false" /></label>`;
+      })
+      .join("");
+    body = `
+      ${prov.note ? `<p class="note">${esc(prov.note)}</p>` : ""}
+      <div class="grid2">
+        <label class="fld"><span>Environment</span><select data-pay="environment">${envOpts}</select></label>
+        <label class="fld pay-enable"><span>Enable live payments</span>
+          <input type="checkbox" data-pay="enabled" ${savedForThis?.enabled ? "checked" : ""} />
+        </label>
+      </div>
+      ${fields}`;
+  }
+
+  return `<div class="form paycfg">
+    <div class="pay-status">${status}</div>
+    <p class="muted">Choose one processor and enter its credentials. If none is enabled and fully configured, checkout automatically stays in the existing demo mode.</p>
+    <label class="fld"><span>Payment processor</span>
+      <select data-pay="provider">${providerOpts}</select>
+    </label>
+    ${body}
+    <p class="pay-secure note">${icon("lock", 14)} Credentials are stored on the server, never in this browser. Saved secret keys are kept when you leave their field blank.</p>
+    <div class="formfoot">
+      <span></span>
+      <div class="row">
+        <button type="button" class="btn btn--primary" data-act="save-payments">Save payment settings</button>
+      </div>
+    </div>
+  </div>`;
+}
+
 function settings(): string {
   return `<div class="form">
     <h3>Backup &amp; restore</h3>
@@ -653,6 +742,8 @@ function find<T extends { id: string }>(arr: T[], id: string): T | undefined {
 function mainPanel(): string {
   const s = view.section;
   if (s === "settings") return header("Settings", "Backup, restore, and notes") + settings();
+  if (s === "payments")
+    return header("Payments", "Configure a live card processor, or stay in demo mode") + paymentsPanel();
   if (s === "dashboard") return header("Dashboard", "Sales overview & store performance") + dashboardPanel();
 
   const titles: Record<string, [string, string]> = {
@@ -844,6 +935,44 @@ function removeItem(section: Section, id: string): void {
   if (section === "orders") removeOrder(id);
 }
 
+// ── Payments: collect the form and persist to the server ─────────
+async function savePayments(): Promise<void> {
+  const panel = document.querySelector<HTMLElement>(".paycfg");
+  if (!panel) return;
+  const provider = (panel.querySelector('[data-pay="provider"]') as HTMLSelectElement | null)?.value || "";
+
+  if (!provider) {
+    // "Demo mode" chosen: disable any live processor.
+    const res = await savePaymentConfig({ provider: "", enabled: false, environment: "", values: {} });
+    if (!res.ok) return toast("Save failed — check the wrapper API key");
+    payCfg = await fetchPaymentConfig();
+    payForm.provider = "";
+    render();
+    return toast("Saved — checkout stays in demo mode");
+  }
+
+  const environment = (panel.querySelector('[data-pay="environment"]') as HTMLSelectElement | null)?.value || "";
+  const enabled = (panel.querySelector('[data-pay="enabled"]') as HTMLInputElement | null)?.checked ?? false;
+  const values: Record<string, string> = {};
+  panel.querySelectorAll<HTMLInputElement>("[data-pay-field]").forEach((el) => {
+    values[el.dataset.payField!] = el.value.trim();
+  });
+
+  const res = await savePaymentConfig({ provider, enabled, environment, values });
+  if (!res.ok) return toast("Save failed — check the wrapper API key");
+  payCfg = await fetchPaymentConfig();
+  payForm.provider = "";
+  payForm.environment = "";
+  render();
+  toast(
+    res.live
+      ? "Live payments enabled"
+      : enabled
+        ? "Saved — fill required fields to go live"
+        : "Saved — checkout stays in demo mode",
+  );
+}
+
 // ── events ───────────────────────────────────────────────────────
 document.addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
@@ -853,6 +982,8 @@ document.addEventListener("click", (e) => {
     view.editing = null;
     view.query = "";
     view.statusFilter = "all";
+    payForm.provider = "";
+    payForm.environment = "";
     return render();
   }
   const openOrder = el.closest<HTMLElement>("[data-open-order]")?.dataset.openOrder;
@@ -896,6 +1027,10 @@ document.addEventListener("click", (e) => {
     }
     return;
   }
+  if (act === "save-payments") {
+    void savePayments();
+    return;
+  }
   if (act === "export") return download("enm-content.json", exportData());
   if (act === "logout") {
     if (confirm("Sign out of the admin?")) signOutAdmin();
@@ -928,6 +1063,16 @@ document.addEventListener("input", (e) => {
 // Image uploads (downscaled to a data URL) + JSON import.
 document.addEventListener("change", async (e) => {
   const el = e.target as HTMLInputElement;
+  // Payments: switching provider re-renders the field set; env is just stored.
+  if (el.matches('[data-pay="provider"]')) {
+    payForm.provider = el.value;
+    payForm.environment = "";
+    return render();
+  }
+  if (el.matches('[data-pay="environment"]')) {
+    payForm.environment = el.value;
+    return;
+  }
   if (el.matches("[data-status-filter]")) {
     view.statusFilter = el.value as OrderStatus | "all";
     const list = document.getElementById("admin-list");
@@ -960,6 +1105,7 @@ async function startAdmin(): Promise<void> {
   // real data; orders come from the local log (the storefront's source of truth).
   await loadCatalog();
   loadDB();
+  payCfg = await fetchPaymentConfig(); // secret-free view of the saved processor
   render();
   if (started) return;
   started = true;

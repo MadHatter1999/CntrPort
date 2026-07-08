@@ -1,7 +1,8 @@
 import { icon } from "../lib/icons";
 
 /** Generic store mark. The store name is filled in at runtime from the
- *  Counterpoint store config (see render.renderBrand). */
+ *  Counterpoint store config (see render.renderBrand). The icon's black parts
+ *  are recoloured to white on dark surfaces via CSS (see .brand__badge). */
 const brandBadge = /* html */ `<img class="brand__badge" src="/favicon.svg" alt="" width="48" height="48" />`;
 
 /**

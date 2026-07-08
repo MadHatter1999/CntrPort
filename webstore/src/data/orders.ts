@@ -65,8 +65,9 @@ export interface Order {
   shipping: number;
   tax: number;
   total: number;
-  /** Mocked card payment - no real charge is ever made. */
-  payment: { method: "card"; brand: string; last4: string };
+  /** Card payment. `mode` is "demo" unless a live processor was configured in
+   *  the admin at checkout time; `provider` names it when live. */
+  payment: { method: "card"; brand: string; last4: string; mode?: "demo" | "live"; provider?: string };
   /** Counterpoint Document id once the order was written back to CP. */
   cpDocId?: string;
   lang: LangCode;
