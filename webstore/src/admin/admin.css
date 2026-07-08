@@ -24,9 +24,9 @@ button, a, label, input { touch-action: manipulation; }
 /* Sidebar */
 .side { background: var(--sidebar); color: #e8e0d6; display: flex; flex-direction: column; padding: 16px 12px; gap: 4px; }
 .side__brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 14px; }
-/* Sidebar is dark: turn the logo's black parts white (reds preserved via
-   hue-rotate). The SVG file is never modified. */
-.side__brand img { width: 36px; height: 36px; border-radius: 50%; filter: invert(1) hue-rotate(180deg); }
+/* Sidebar is dark: swap to the generated dark variant (black->white, reds
+   unchanged). The source SVG is never modified (scripts/gen-dark-icon.mjs). */
+.side__brand img { width: 36px; height: 36px; border-radius: 50%; content: url("/favicon-dark.svg"); }
 .side__brand b { font-size: 0.95rem; }
 .side__brand small { display: block; color: #b6ab9c; font-weight: 400; font-size: 0.72rem; }
 .navbtn {

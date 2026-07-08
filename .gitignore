@@ -9,6 +9,10 @@
 # Admin-configured payment-processor credentials (gateway secret keys).
 payments.json
 
+# Generated dark-surface variant of the brand icon (created by predev/prebuild
+# from favicon.svg via scripts/gen-dark-icon.mjs).
+webstore/public/favicon-dark.svg
+
 # --- Python -------------------------------------------------------------------
 __pycache__/
 *.py[cod]

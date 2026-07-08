@@ -5,8 +5,11 @@
   "type": "module",
   "description": "Counterpoint-backed storefront PWA (TypeScript + Vite). Reads its catalog from the CntrPort wrapper.",
   "scripts": {
+    "predev": "node scripts/gen-dark-icon.mjs public/favicon.svg public/favicon-dark.svg",
     "dev": "vite",
     "dev:lan": "vite --host",
+    "dark-icon": "node scripts/gen-dark-icon.mjs public/favicon.svg public/favicon-dark.svg",
+    "prebuild": "node scripts/gen-dark-icon.mjs public/favicon.svg public/favicon-dark.svg",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "preview:lan": "vite preview --host",

@@ -150,9 +150,10 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
   flex: 0 0 auto;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.14));
 }
-/* On dark surfaces the logo's black parts turn white (reds are preserved via
-   the hue-rotate) - the SVG file itself is never touched. */
-.footer .brand__badge { filter: invert(1) hue-rotate(180deg); }
+/* On dark surfaces swap to the auto-generated dark variant of the icon: only
+   its black turns white, every red stays exactly the same. The source SVG is
+   never modified (see scripts/gen-dark-icon.mjs). */
+.footer .brand__badge { content: url("/favicon-dark.svg"); }
 .brand__text { display: flex; flex-direction: column; }
 .brand__name { font-weight: 800; font-size: 1.04rem; letter-spacing: -0.02em; }
 .brand__tag { font-size: 0.72rem; color: var(--muted); }
