@@ -64,7 +64,9 @@ export default defineConfig({
         // Product/hero photos are runtime-cached on first view, not precached.
         // The Firebase SDK chunks (index.esm-*) are only pulled in when a project
         // is configured, so keep them out of the precache to stay tiny.
-        globIgnores: ["**/images/**", "**/index.esm-*.js"],
+        // Don't precache item photos / placeholder art - they're runtime-cached
+        // on first view (below). Precaching 1000s of PNGs bloated install to ~126MB.
+        globIgnores: ["**/images/**", "**/item-images/**", "**/index.esm-*.js"],
         navigateFallback: "/index.html",
         // The admin tool is its own page- don't fall back to the storefront.
         navigateFallbackDenylist: [/^\/admin/],

@@ -110,6 +110,13 @@ if not CP_ITEM_IMAGE_DIR and CP_TOPLEVEL_DIR and CP_COMPANY_ALIAS:
         CP_TOPLEVEL_DIR, CP_COMPANY_ALIAS, "Configuration", "ItemImages"
     )
 
+# Placeholder art for items that have no real photo yet: served after the real
+# ItemImages dir misses, so nothing renders blank. Defaults to a _placeholders
+# subfolder of the ItemImages dir so it travels with the same copy to the server.
+CP_ITEM_PLACEHOLDER_DIR = _env("CP_ITEM_PLACEHOLDER_DIR")
+if not CP_ITEM_PLACEHOLDER_DIR and CP_ITEM_IMAGE_DIR:
+    CP_ITEM_PLACEHOLDER_DIR = os.path.join(CP_ITEM_IMAGE_DIR, "_placeholders")
+
 # Storefront (webstore/) presentation + order-writeback config. The catalog,
 # categories and locations are read live from Counterpoint; these cover the few
 # things CP doesn't model for a web store.
@@ -955,6 +962,7 @@ store_api.register_store_routes(
         "default_cust_no": STORE_DEFAULT_CUST_NO,
         "promo_str_id": STORE_PROMO_STR_ID or STORE_DEFAULT_LOC_ID,
         "item_image_dir": CP_ITEM_IMAGE_DIR,
+        "item_placeholder_dir": CP_ITEM_PLACEHOLDER_DIR,
     },
 )
 

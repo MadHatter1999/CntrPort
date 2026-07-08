@@ -367,19 +367,25 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
 }
 .cat-tile:hover { transform: translateY(-3px); box-shadow: var(--sh-2); }
 .cat-tile__thumb {
+  flex: 0 0 auto;
+  position: relative; /* containing block for the absolutely-filled image */
   width: 108px;
   height: 108px;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
+  overflow: hidden; /* clip: no product photo may burst out of the tile */
   background: radial-gradient(120% 120% at 50% 20%, #fff 50%, var(--tint) 130%);
 }
+/* Absolute-fill (not width/height:100% in a grid cell) so the box has a
+   definite height and object-fit:contain actually engages - otherwise tall
+   bottle photos render at height:auto and blow out of the tile. */
 .cat-tile__thumb img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   padding: 4px;
-  mix-blend-mode: multiply;
+  box-sizing: border-box;
 }
 .cat-tile__name { font-size: 0.82rem; font-weight: 650; text-align: center; color: var(--ink); }
 
@@ -433,12 +439,16 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
   place-items: center;
   background: radial-gradient(130% 130% at 50% 15%, #fff 58%, var(--tint) 140%);
 }
+/* Absolute-fill so object-fit:contain has a definite box (see .cat-tile__thumb).
+   Images are transparent cutouts now - no multiply blend (it darkened them). */
 .card__img {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: contain;
   padding: 12px;
-  mix-blend-mode: multiply; /* product shots are on white- blend onto the tint */
+  box-sizing: border-box;
 }
 .badge {
   position: absolute;
@@ -646,15 +656,14 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
 }
 .crow__thumb {
   grid-area: thumb;
+  position: relative;
   width: 48px;
   height: 48px;
   border-radius: var(--r-sm);
-  display: grid;
-  place-items: center;
   overflow: hidden;
   background: radial-gradient(120% 120% at 50% 20%, #fff, var(--tint));
 }
-.crow__thumb img { width: 100%; height: 100%; object-fit: contain; padding: 4px; mix-blend-mode: multiply; }
+.crow__thumb img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 4px; box-sizing: border-box; }
 .crow__info { grid-area: info; display: flex; flex-direction: column; }
 .crow__name { font-weight: 650; font-size: 0.92rem; }
 .crow__unit { font-size: 0.78rem; color: var(--muted); }

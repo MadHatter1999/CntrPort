@@ -25,11 +25,10 @@ intact. SQL is read-only.
 from __future__ import annotations
 
 import logging
-import mimetypes
 import os
 from typing import Any, Callable
 
-from flask import Response, jsonify, request
+from flask import Response, jsonify, request, send_file
 
 log = logging.getLogger("cntrport.store")
 
@@ -218,14 +217,38 @@ def register_store_routes(
             return jsonify([])
 
     def _category_image(cur, categ_cod: str) -> str:
+        """Tile image for a category = the first of its items that actually has
+        a photo on disk. Picking the first item blindly (old behaviour) often
+        landed on an item with no image, so the tile fell through to the slow
+        CP-API path and rendered nothing. Prefer a real, local, fast image."""
         try:
+            # Draw the tile image only from items that are actually displayed:
+            # active + e-commerce flagged, matching the products query gate.
+            cols = get_existing_columns("IM_ITEM")
+            ecom_col = next(
+                (c for c in ("IS_ECOMM_ITEM", "IS_ECOMMERCE", "ECOMM_ITEM") if c in cols),
+                None,
+            )
+            where = ["CATEG_COD = ?"]
+            if "STAT" in cols:
+                where.append("STAT = 'A'")
+            if ecom_col:
+                where.append(f"{ecom_col} = 'Y'")
             cur.execute(
-                "SELECT TOP (1) ITEM_NO FROM IM_ITEM WHERE CATEG_COD = ? ORDER BY ITEM_NO",
+                f"SELECT TOP (300) ITEM_NO FROM IM_ITEM "
+                f"WHERE {' AND '.join(where)} ORDER BY ITEM_NO",
                 categ_cod,
             )
-            row = cur.fetchone()
-            if row and row.ITEM_NO:
-                return f"/api/store/item-image/{str(row.ITEM_NO).strip()}"
+            item_nos = [str(r.ITEM_NO).strip() for r in cur.fetchall() if r.ITEM_NO]
+            if item_nos:
+                base_dir = config.get("item_image_dir") or ""
+                if base_dir and os.path.isdir(base_dir):
+                    for iid in item_nos:
+                        if _local_item_image_path(iid):
+                            return f"/api/store/item-image/{iid}"
+                # No local dir configured (or none of the items have a file yet):
+                # keep the old behaviour so categories still get a URL.
+                return f"/api/store/item-image/{item_nos[0]}"
         except Exception:
             pass
         return ""
@@ -331,44 +354,66 @@ def register_store_routes(
     #   2. the CP web API image proxy
     #   3. an inline "No image" SVG placeholder
     _IMG_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+    # Long cache: item art rarely changes and send_file adds an ETag, so the
+    # browser revalidates with a cheap 304 instead of re-downloading the bytes.
+    _IMG_MAX_AGE = 604800  # 7 days
 
-    def _local_item_image(item_no: str) -> tuple[bytes, str] | None:
-        """Serve <ITEM_NO>.<ext> straight from the Counterpoint ItemImages
-        directory when present. Returns (bytes, content_type) or None."""
-        base_dir = config.get("item_image_dir") or ""
+    def _find_in_dir(base_dir: str, item_no: str) -> str | None:
+        """Path to <ITEM_NO>.<ext> in base_dir, or None. <path:item_no> can
+        contain separators, so collapse to a bare filename first - a crafted id
+        must not escape the directory."""
         if not base_dir or not os.path.isdir(base_dir):
             return None
-        # <path:item_no> can contain separators; collapse to a bare filename so
-        # a crafted id can't escape the ItemImages directory.
         safe = os.path.basename(item_no.strip())
         if not safe or safe in (".", "..") or "/" in safe or "\\" in safe:
             return None
         for ext in _IMG_EXTS:
             path = os.path.join(base_dir, safe + ext)
             if os.path.isfile(path):
-                try:
-                    with open(path, "rb") as fh:
-                        data = fh.read()
-                except OSError:
-                    continue
-                ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-                return data, ctype
+                return path
         return None
+
+    def _local_item_image_path(item_no: str) -> str | None:
+        """Real photo for the item from the Counterpoint ItemImages directory."""
+        return _find_in_dir(config.get("item_image_dir") or "", item_no)
+
+    def _placeholder(max_age: int = 3600) -> Response:
+        return Response(
+            _PLACEHOLDER_SVG,
+            status=200,
+            content_type="image/svg+xml",
+            headers={"Cache-Control": f"public, max-age={max_age}"},
+        )
 
     @app.get("/api/store/item-image/<path:item_no>")
     def store_item_image(item_no: str):
         item_no = item_no.strip()
 
-        local = _local_item_image(item_no)
-        if local:
-            data, ctype = local
-            return Response(
-                data,
-                status=200,
-                content_type=ctype,
-                headers={"Cache-Control": "public, max-age=86400"},
-            )
+        # 1) Local file on the CP server - fast, cached, conditional (304 on
+        #    revalidate). This is the source of truth for this deployment.
+        path = _local_item_image_path(item_no)
+        if path:
+            resp = send_file(path, conditional=True, max_age=_IMG_MAX_AGE)
+            resp.headers["Cache-Control"] = f"public, max-age={_IMG_MAX_AGE}"
+            return resp
 
+        # 2) No real photo: serve the item's labeled placeholder art so the card
+        #    never renders blank (still fast + cached).
+        ph = _find_in_dir(config.get("item_placeholder_dir") or "", item_no)
+        if ph:
+            resp = send_file(ph, conditional=True, max_age=86400)
+            resp.headers["Cache-Control"] = "public, max-age=86400"
+            return resp
+
+        # 3) When a local ItemImages dir is configured it IS the catalogue's
+        #    image source, so a miss should return instantly. Falling through to
+        #    the CP web API here is what made the storefront crawl: an
+        #    unreachable/slow CP API blocked every missing image up to the 60s
+        #    upstream timeout. Return the generic placeholder immediately instead.
+        if config.get("item_image_dir"):
+            return _placeholder()
+
+        # 4) Legacy path (no local dir configured): proxy the CP web API.
         try:
             status, body, _err = cp_api_request("GET", f"/Item/{item_no}/Images")
             filename = _first_image_filename(body)
