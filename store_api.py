@@ -490,18 +490,13 @@ def register_store_routes(
             hdr["STK_LOC_ID"] = loc_id
         if cust_no:
             hdr["CUST_NO"] = cust_no
-        notes = customer.get("notes")
 
+        # Only the fields Counterpoint's /Document model expects go upstream - an
+        # extra key (e.g. our old "_web") makes CP reject the whole ticket. The
+        # web/customer context is kept locally in the admin order log instead.
         document = {
             "PS_DOC_HDR": hdr,
             "PS_DOC_LIN": lines,
-            # Echo the web context so a post_document hook / report can use it.
-            "_web": {
-                "customer": customer,
-                "fulfillment": payload.get("fulfillment"),
-                "ref": payload.get("ref"),
-                "notes": notes,
-            },
         }
 
         try:
@@ -643,3 +638,76 @@ def register_store_routes(
         return jsonify({"ok": ok, "live": _payment_is_live(cfg) if ok else False}), (
             200 if ok else 500
         )
+
+    # ── Item writeback -> Counterpoint (shared fields only) ───────────────
+    # NCR's API is read-only for items, so this writes the shared columns
+    # (description, category, price, unit) straight to IM_ITEM. It bypasses CP
+    # maintenance logic, so it is disabled unless CP_ALLOW_ITEM_WRITE=true. Only
+    # a fixed whitelist of columns is ever written, always parameterised.
+    _ITEM_FIELD_COLUMNS = {
+        "name": "DESCR",
+        "categoryId": "CATEG_COD",
+        "price": "PRC_1",
+        "unit": ("SELL_UNIT", "STK_UNIT", "DFLT_UNIT"),  # first that exists
+    }
+
+    @app.patch("/api/store/items/<path:item_no>")
+    def store_item_update(item_no: str):
+        item_no = item_no.strip()
+        if not item_no:
+            return jsonify({"ok": False, "message": "item_no required"}), 400
+        if not config.get("allow_item_write"):
+            return jsonify({
+                "ok": False,
+                "disabled": True,
+                "message": "Item writeback to Counterpoint is disabled "
+                           "(set CP_ALLOW_ITEM_WRITE=true to enable).",
+            }), 200
+
+        body = request.get_json(silent=True) or {}
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                cols = get_existing_columns("IM_ITEM")
+
+                updates: dict[str, Any] = {}
+                for field, col in _ITEM_FIELD_COLUMNS.items():
+                    if field not in body:
+                        continue
+                    target = None
+                    if isinstance(col, tuple):
+                        target = next((c for c in col if c in cols), None)
+                    elif col in cols:
+                        target = col
+                    if not target:
+                        continue
+                    val = body[field]
+                    if field == "price":
+                        try:
+                            val = float(val)
+                        except (TypeError, ValueError):
+                            continue
+                    else:
+                        val = "" if val is None else str(val).strip()
+                    updates[target] = val
+
+                if not updates:
+                    return jsonify({"ok": False, "message": "No shared fields to update."}), 400
+
+                cur.execute("SELECT COUNT(*) FROM IM_ITEM WHERE ITEM_NO = ?", item_no)
+                if cur.fetchone()[0] == 0:
+                    # New/local-only admin items don't exist in CP - saved locally only.
+                    return jsonify({"ok": False, "notFound": True,
+                                    "message": "Item not found in Counterpoint."}), 404
+
+                set_clause = ", ".join(f"{c} = ?" for c in updates)
+                cur.execute(
+                    f"UPDATE IM_ITEM SET {set_clause} WHERE ITEM_NO = ?",
+                    [*updates.values(), item_no],
+                )
+                cn.commit()
+                return jsonify({"ok": True, "item_no": item_no,
+                                "updated": sorted(updates.keys())})
+        except Exception as exc:  # pragma: no cover
+            log.warning("item write %s failed: %s", item_no, exc)
+            return jsonify({"ok": False, "message": f"Counterpoint update failed: {exc}"}), 500

@@ -129,6 +129,12 @@ CP_PAYMENTS_CONFIG_PATH = _env(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "payments.json"),
 )
 
+# Admin edits to shared item fields (description, category, price, unit) are
+# written back to Counterpoint. NCR's API has no item-write endpoint, so this is
+# a direct SQL UPDATE of IM_ITEM - it bypasses CP maintenance triggers, so it is
+# OFF by default and must be explicitly enabled per install.
+CP_ALLOW_ITEM_WRITE = _env_bool("CP_ALLOW_ITEM_WRITE", False)
+
 # Storefront (webstore/) presentation + order-writeback config. The catalog,
 # categories and locations are read live from Counterpoint; these cover the few
 # things CP doesn't model for a web store.
@@ -976,6 +982,7 @@ store_api.register_store_routes(
         "item_image_dir": CP_ITEM_IMAGE_DIR,
         "item_placeholder_dir": CP_ITEM_PLACEHOLDER_DIR,
         "payments_config_path": CP_PAYMENTS_CONFIG_PATH,
+        "allow_item_write": CP_ALLOW_ITEM_WRITE,
     },
 )
 

@@ -25,6 +25,7 @@ import {
   type OrderStatus,
 } from "../data/orders";
 import { requireAuth, signOutAdmin, currentUserLabel } from "./auth";
+import { updateItem } from "../data/api";
 import {
   PAYMENT_PROVIDERS,
   getProvider,
@@ -861,6 +862,21 @@ function saveForm(form: HTMLFormElement): void {
       wasPrice: d.wasPrice,
     };
     upsert(DB.products, p);
+    // Editing an existing item also pushes the shared fields (name, category,
+    // price, unit) to Counterpoint. No-op for new/local-only items, and quietly
+    // local-only unless CP_ALLOW_ITEM_WRITE is enabled server-side.
+    if (!editingNew) {
+      void updateItem(p.id, {
+        name: p.name,
+        categoryId: p.categoryId,
+        price: p.price,
+        unit: p.unit,
+      }).then((r) => {
+        if (r.ok) toast("Saved · updated in Counterpoint");
+        else if (r.message && !r.disabled && !r.notFound)
+          toast("Saved locally · Counterpoint update failed");
+      });
+    }
   } else if (s === "categories") {
     if (!d.name) return toast("Name is required");
     const existing = editingNew ? undefined : find(DB.categories, view.editing as string);

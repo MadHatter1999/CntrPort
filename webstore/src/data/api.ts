@@ -70,6 +70,33 @@ export interface OrderResult {
   counterpoint_error?: string | null;
 }
 
+export interface ItemWriteResult {
+  ok: boolean;
+  disabled?: boolean;
+  notFound?: boolean;
+  message?: string;
+  updated?: string[];
+}
+
+/** Push shared item fields (name/category/price/unit) back to Counterpoint.
+ *  Only affects Counterpoint when CP_ALLOW_ITEM_WRITE is enabled server-side;
+ *  otherwise returns { disabled: true } and the edit stays local. Never throws. */
+export async function updateItem(
+  itemNo: string,
+  fields: { name?: string; categoryId?: string; price?: number; unit?: string },
+): Promise<ItemWriteResult> {
+  try {
+    const res = await fetch(apiUrl(`/api/store/items/${encodeURIComponent(itemNo)}`), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(fields),
+    });
+    return (await res.json()) as ItemWriteResult;
+  } catch {
+    return { ok: false, message: "network error" };
+  }
+}
+
 /** POST a placed order to Counterpoint (creates a Document). Never throws. */
 export async function postOrder(payload: unknown): Promise<OrderResult> {
   try {
