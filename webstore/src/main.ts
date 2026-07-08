@@ -27,6 +27,7 @@ import {
   setLocationsOpen,
   setCheckoutOpen,
   setPage,
+  setProductPage,
 } from "./state/store";
 import { openCheckout } from "./components/checkout";
 import { loadCatalog, getConfig } from "./data/cms";
@@ -127,7 +128,7 @@ function showToast(msg: string): void {
 document.addEventListener("click", (e) => {
   const target = (e.target as HTMLElement).closest<HTMLElement>("[data-action]");
   if (!target) return;
-  const { action, id, cat, i, page } = target.dataset;
+  const { action, id, cat, i, page, pnum } = target.dataset;
 
   switch (action) {
     case "home":
@@ -164,6 +165,10 @@ document.addEventListener("click", (e) => {
       break;
     case "chip":
       setCategory(cat!);
+      scrollToId("products");
+      break;
+    case "goto-page":
+      setProductPage(Number(pnum));
       scrollToId("products");
       break;
     case "add":
@@ -223,6 +228,12 @@ function wireMountedEvents(): void {
     const value = (e.target as HTMLInputElement).value;
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(() => setQuery(value), 120);
+  });
+
+  // Crossing the desktop/mobile breakpoint flips pagination on/off, so re-render
+  // the product grid when it changes.
+  window.matchMedia("(min-width: 768px)").addEventListener("change", () => {
+    renderProducts();
   });
 }
 

@@ -48,6 +48,9 @@ const en: Dict = {
   "results.none": "No products match your search.",
   "results.clear": "Clear search",
 
+  "pager.prev": "Prev",
+  "pager.next": "Next",
+
   "product.add": "Add",
   "badge.new": "New",
   "badge.popular": "Popular",

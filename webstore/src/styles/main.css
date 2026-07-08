@@ -421,6 +421,38 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: 16px;
 }
+
+/* Pagination (desktop only; JS hides it on mobile / <=1 page) */
+.pagination {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin-top: 22px;
+}
+.pagination[hidden] { display: none; }
+.pagination__btn {
+  min-width: 38px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+}
+.pagination__btn:hover:not(:disabled):not(.is-current) { border-color: #d8cfc2; }
+.pagination__btn.is-current {
+  background: var(--ink);
+  color: #fff;
+  border-color: var(--ink);
+  cursor: default;
+}
+.pagination__btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.pagination__gap { padding: 0 4px; color: var(--muted); }
 .card {
   display: flex;
   flex-direction: column;

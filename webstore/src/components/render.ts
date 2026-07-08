@@ -224,6 +224,15 @@ function card(p: Product): string {
 // cart can't make the whole grid re-decode and flicker.
 let lastGridKey = "";
 
+// Desktop-only pagination: over PAGE_SIZE items, wider viewports page through
+// the list; phones keep the full scrolling grid (mobile left as-is).
+const PAGE_SIZE = 20;
+const DESKTOP_MQ = "(min-width: 768px)";
+
+export function isDesktopViewport(): boolean {
+  return window.matchMedia(DESKTOP_MQ).matches;
+}
+
 export function renderProducts(): void {
   const list = filtered();
   const title = $("#products-title");
@@ -236,10 +245,17 @@ export function renderProducts(): void {
 
   $("#results-count").textContent = t("results.count", { n: list.length });
 
+  const paginate = isDesktopViewport() && list.length > PAGE_SIZE;
+  const pageCount = paginate ? Math.ceil(list.length / PAGE_SIZE) : 1;
+  const page = Math.min(Math.max(state.productPage, 1), pageCount);
+  const shown = paginate ? list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE) : list;
+
   const grid = $("#product-grid");
-  const key = `${state.category}|${state.query.trim()}`;
+  // Re-render when the shown set changes (category / search / page / breakpoint).
+  // A cart change keeps the same key, so we only refresh add/qty controls and the
+  // <img>s never churn.
+  const key = `${state.category}|${state.query.trim()}|${paginate ? page : "all"}`;
   if (key === lastGridKey && grid.childElementCount > 0) {
-    // Same product set - only refresh add/quantity controls in place.
     syncCartControls(grid);
     return;
   }
@@ -252,9 +268,63 @@ export function renderProducts(): void {
         <p>${esc(t("results.none"))}</p>
         <button class="btn btn--ghost" data-action="clear-search">${esc(t("results.clear"))}</button>
       </div>`;
+    renderPagination(false, 1, 1);
     return;
   }
-  grid.innerHTML = list.map(card).join("");
+  grid.innerHTML = shown.map(card).join("");
+  renderPagination(paginate, page, pageCount);
+}
+
+/** Compact page list, e.g. 1 … 4 [5] 6 … 20. */
+function pageWindow(current: number, total: number): (number | "…")[] {
+  const near = new Set([1, total, current - 1, current, current + 1]);
+  const out: (number | "…")[] = [];
+  let prev = 0;
+  for (let i = 1; i <= total; i++) {
+    if (!near.has(i)) continue;
+    if (i - prev > 1) out.push("…");
+    out.push(i);
+    prev = i;
+  }
+  return out;
+}
+
+function pageBtn(
+  pnum: number,
+  label: string,
+  opts: { current?: boolean; disabled?: boolean; aria?: string } = {},
+): string {
+  const attrs = [
+    `class="pagination__btn${opts.current ? " is-current" : ""}"`,
+    `data-action="goto-page"`,
+    `data-pnum="${pnum}"`,
+    opts.current ? `aria-current="page"` : "",
+    opts.disabled ? "disabled" : "",
+    opts.aria ? `aria-label="${esc(opts.aria)}"` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<button ${attrs}>${esc(label)}</button>`;
+}
+
+function renderPagination(show: boolean, page: number, pageCount: number): void {
+  const el = $("#pagination");
+  if (!show) {
+    el.hidden = true;
+    el.innerHTML = "";
+    return;
+  }
+  const parts = [
+    pageBtn(page - 1, t("pager.prev"), { disabled: page <= 1, aria: t("pager.prev") }),
+    ...pageWindow(page, pageCount).map((it) =>
+      it === "…"
+        ? `<span class="pagination__gap" aria-hidden="true">…</span>`
+        : pageBtn(it, String(it), { current: it === page }),
+    ),
+    pageBtn(page + 1, t("pager.next"), { disabled: page >= pageCount, aria: t("pager.next") }),
+  ];
+  el.innerHTML = parts.join("");
+  el.hidden = false;
 }
 
 /** Update only each card's in-cart state + add/qty control (no image churn). */

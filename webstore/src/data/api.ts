@@ -57,8 +57,10 @@ export const fetchConfig = (): Promise<StoreConfig> =>
 export const fetchCategories = async (): Promise<Category[]> =>
   (await getJSON<Category[]>("/api/store/categories", [])).map(absImage);
 
+// Pull the whole ecom catalog (API caps at 5000) so client-side search and the
+// desktop pager cover every product, not just the API's default first 1000.
 export const fetchProducts = async (): Promise<Product[]> =>
-  (await getJSON<Product[]>("/api/store/products", [])).map(absImage);
+  (await getJSON<Product[]>("/api/store/products?limit=5000", [])).map(absImage);
 
 export interface OrderResult {
   ok: boolean;

@@ -74,6 +74,7 @@ export function shellHTML(): string {
         <span class="section__count" id="results-count"></span>
       </div>
       <div class="product-grid" id="product-grid"></div>
+      <nav class="pagination" id="pagination" aria-label="Pagination" hidden></nav>
     </section>
 
     <!-- Stores -->

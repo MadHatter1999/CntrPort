@@ -6,6 +6,8 @@ export interface State {
   category: string;
   /** Free-text search query. */
   query: string;
+  /** 1-based product page (desktop pagination only; mobile shows all). */
+  productPage: number;
   /** productId -> quantity. */
   cart: Record<string, number>;
   cartOpen: boolean;
@@ -35,6 +37,7 @@ export const state: State = {
   lang: "en",
   category: "all",
   query: "",
+  productPage: 1,
   cart: loadCart(),
   cartOpen: false,
   menuOpen: false,
@@ -55,11 +58,18 @@ export function subscribe(fn: Listener): () => void {
 // ── Mutations ────────────────────────────────────────────────────
 export function setCategory(category: string): void {
   state.category = category;
+  state.productPage = 1; // new filter -> back to the first page
   emit();
 }
 
 export function setQuery(query: string): void {
   state.query = query;
+  state.productPage = 1; // new search -> back to the first page
+  emit();
+}
+
+export function setProductPage(page: number): void {
+  state.productPage = Math.max(1, page);
   emit();
 }
 
