@@ -151,6 +151,16 @@ STORE_DEFAULT_CUST_NO = _env("STORE_DEFAULT_CUST_NO")       # walk-in/web custom
 # web order location when unset (they share names on most installs).
 STORE_PROMO_STR_ID    = _env("STORE_PROMO_STR_ID")
 
+# NCR /Document header identity for web-order tickets. These MUST be valid on the
+# install (a real store / station / drawer / user), or Counterpoint rejects the
+# POST. Defaults mirror the NCR APIGuide minimal example - override per install.
+STORE_DOC_STR_ID  = _env("STORE_DOC_STR_ID", STORE_PROMO_STR_ID or "MAIN")
+STORE_DOC_STA_ID  = _env("STORE_DOC_STA_ID", "1")
+STORE_DOC_DRW_ID  = _env("STORE_DOC_DRW_ID", "1")
+STORE_DOC_USR_ID  = _env("STORE_DOC_USR_ID", CP_API_USERNAME or "API")
+STORE_DOC_TKT_TYP = _env("STORE_DOC_TKT_TYP", "T")   # ticket
+STORE_DOC_DOC_TYP = _env("STORE_DOC_DOC_TYP", "O")   # order
+
 FLASK_HOST  = _env("FLASK_HOST", "0.0.0.0")
 FLASK_PORT  = _env_int("FLASK_PORT", 5000)
 FLASK_DEBUG = _env_bool("FLASK_DEBUG", True)
@@ -983,6 +993,12 @@ store_api.register_store_routes(
         "item_placeholder_dir": CP_ITEM_PLACEHOLDER_DIR,
         "payments_config_path": CP_PAYMENTS_CONFIG_PATH,
         "allow_item_write": CP_ALLOW_ITEM_WRITE,
+        "doc_str_id": STORE_DOC_STR_ID,
+        "doc_sta_id": STORE_DOC_STA_ID,
+        "doc_drw_id": STORE_DOC_DRW_ID,
+        "doc_usr_id": STORE_DOC_USR_ID,
+        "doc_tkt_typ": STORE_DOC_TKT_TYP,
+        "doc_doc_typ": STORE_DOC_DOC_TYP,
     },
 )
 

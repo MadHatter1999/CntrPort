@@ -462,42 +462,52 @@ def register_store_routes(
         if not items:
             return jsonify({"ok": False, "message": "No line items in order."}), 400
 
-        customer = payload.get("customer") or {}
-        loc_id = (payload.get("storeId") or config.get("default_loc_id") or "").strip()
         cust_no = (payload.get("custNo") or config.get("default_cust_no") or "").strip()
 
-        # A reasonable, generic Counterpoint ticket. Different installs require
-        # different header fields; this is the common shape. Hooks in
-        # __CntrPHooks__.py (post_document) can reshape it per deployment.
-        lines = []
+        # NCR /Document shape (see NCR APIGuide POST_Document.md):
+        #   { "PS_DOC_HDR": { STR_ID, STA_ID, DRW_ID, TKT_TYP, DOC_TYP, USR_ID,
+        #                     "PS_DOC_LIN": [ { LIN_TYP, ITEM_NO, QTY_SOLD, PRC } ] } }
+        # Lines are NESTED inside the header (not a sibling), the header needs a
+        # valid store/station/drawer/user, DOC_TYP is "O" (order), and each line
+        # needs LIN_TYP "O". Getting any of this wrong means CP silently drops or
+        # 500s the ticket - which is why earlier orders never landed.
+        lines: list[dict[str, Any]] = []
         for it in items:
             try:
                 qty = float(it.get("qty") or 0)
             except (TypeError, ValueError):
                 qty = 0
-            if qty <= 0:
+            item_no = str(it.get("id", "")).strip()
+            if qty <= 0 or not item_no:
                 continue
-            line = {"ITEM_NO": str(it.get("id", "")).strip(), "QTY_SOLD": qty}
+            line: dict[str, Any] = {
+                "LIN_TYP": "O",
+                "ITEM_NO": item_no,
+                "QTY_SOLD": str(qty),
+            }
             if it.get("price") is not None:
                 try:
-                    line["PRC"] = float(it["price"])
+                    line["PRC"] = str(float(it["price"]))
                 except (TypeError, ValueError):
                     pass
             lines.append(line)
 
-        hdr: dict[str, Any] = {"TKT_TYP": "T", "DOC_TYP": "T"}
-        if loc_id:
-            hdr["STK_LOC_ID"] = loc_id
+        if not lines:
+            return jsonify({"ok": False, "message": "No valid line items."}), 400
+
+        hdr: dict[str, Any] = {
+            "STR_ID": config.get("doc_str_id") or "MAIN",
+            "STA_ID": config.get("doc_sta_id") or "1",
+            "DRW_ID": config.get("doc_drw_id") or "1",
+            "TKT_TYP": config.get("doc_tkt_typ") or "T",
+            "DOC_TYP": config.get("doc_doc_typ") or "O",
+            "USR_ID": config.get("doc_usr_id") or "API",
+            "PS_DOC_LIN": lines,
+        }
         if cust_no:
             hdr["CUST_NO"] = cust_no
 
-        # Only the fields Counterpoint's /Document model expects go upstream - an
-        # extra key (e.g. our old "_web") makes CP reject the whole ticket. The
-        # web/customer context is kept locally in the admin order log instead.
-        document = {
-            "PS_DOC_HDR": hdr,
-            "PS_DOC_LIN": lines,
-        }
+        document = {"PS_DOC_HDR": hdr}
 
         try:
             status, body, err = cp_api_request("POST", "/Document", json=document)
@@ -505,11 +515,20 @@ def register_store_routes(
             log.warning("store_order: CP Document POST raised: %s", exc)
             status, body, err = 0, None, str(exc)
 
+        # NCR returns the created document; the id may be top-level or nested
+        # under PS_DOC_HDR depending on version.
         doc_id = None
         if isinstance(body, dict):
-            doc_id = body.get("DocId") or body.get("DOC_ID") or body.get("Id")
+            doc_id = (
+                body.get("DocId") or body.get("DOC_ID") or body.get("Id")
+                or body.get("docId")
+            )
+            if not doc_id and isinstance(body.get("PS_DOC_HDR"), dict):
+                doc_id = body["PS_DOC_HDR"].get("DOC_ID") or body["PS_DOC_HDR"].get("DocId")
 
         ok = bool(status and 200 <= status < 300)
+        if not ok:
+            log.warning("store_order: CP /Document rejected (status=%s): %s", status, err or body)
         # Always 200 to the storefront: the admin screen is the source of truth
         # and logs the order regardless; surface CP success/failure in the body.
         return jsonify({
