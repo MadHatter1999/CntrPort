@@ -24,6 +24,8 @@ intact. SQL is read-only.
 """
 from __future__ import annotations
 
+import base64
+import io
 import json
 import logging
 import os
@@ -730,3 +732,54 @@ def register_store_routes(
         except Exception as exc:  # pragma: no cover
             log.warning("item write %s failed: %s", item_no, exc)
             return jsonify({"ok": False, "message": f"Counterpoint update failed: {exc}"}), 500
+
+    # ── Item image writeback -> Counterpoint ItemImages folder ────────────
+    # Writes the uploaded image straight into the CP company's ItemImages dir as
+    # <ITEM_NO>.png - the exact location Counterpoint itself reads item photos
+    # from - so a new image shows in both the storefront and the CP back office.
+    @app.put("/api/store/items/<path:item_no>/image")
+    def store_item_image_write(item_no: str):
+        item_no = item_no.strip()
+        if not config.get("allow_item_write"):
+            return jsonify({"ok": False, "disabled": True,
+                            "message": "Item writeback is disabled (set CP_ALLOW_ITEM_WRITE=true)."}), 200
+        base_dir = config.get("item_image_dir") or ""
+        if not base_dir or not os.path.isdir(base_dir):
+            return jsonify({"ok": False, "message": "ItemImages directory not configured."}), 400
+        safe = os.path.basename(item_no)
+        if not safe or safe in (".", "..") or "/" in safe or "\\" in safe:
+            return jsonify({"ok": False, "message": "Invalid item_no."}), 400
+
+        body = request.get_json(silent=True) or {}
+        image = str(body.get("image") or "")
+        # Only newly-uploaded images (data: URLs) are written. An http(s) URL is
+        # already-served art (nothing to push), so it's a no-op success.
+        if not image.startswith("data:"):
+            return jsonify({"ok": True, "skipped": True,
+                            "message": "No uploaded image to write (not a data URL)."}), 200
+        try:
+            raw = base64.b64decode(image.partition(",")[2])
+        except Exception:
+            raw = b""
+        if not raw:
+            return jsonify({"ok": False, "message": "Could not decode the uploaded image."}), 400
+
+        try:
+            from PIL import Image  # lazy: only needed on write
+            im = Image.open(io.BytesIO(raw)).convert("RGBA")
+            out_path = os.path.join(base_dir, safe + ".png")
+            im.save(out_path, "PNG", optimize=True)
+            # Drop any stale placeholder for this item so the real photo wins.
+            ph_dir = config.get("item_placeholder_dir") or ""
+            if ph_dir:
+                for ext in _IMG_EXTS:
+                    p = os.path.join(ph_dir, safe + ext)
+                    if os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except OSError:
+                            pass
+            return jsonify({"ok": True, "item_no": item_no, "path": out_path})
+        except Exception as exc:  # pragma: no cover
+            log.warning("item image write %s failed: %s", item_no, exc)
+            return jsonify({"ok": False, "message": f"Image write failed: {exc}"}), 500

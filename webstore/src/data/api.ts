@@ -74,6 +74,7 @@ export interface ItemWriteResult {
   ok: boolean;
   disabled?: boolean;
   notFound?: boolean;
+  skipped?: boolean;
   message?: string;
   updated?: string[];
 }
@@ -90,6 +91,21 @@ export async function updateItem(
       method: "PATCH",
       headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify(fields),
+    });
+    return (await res.json()) as ItemWriteResult;
+  } catch {
+    return { ok: false, message: "network error" };
+  }
+}
+
+/** Write a newly-uploaded item image into Counterpoint's ItemImages folder
+ *  (as <ITEM_NO>.png). No-op for non-data-URL images. Never throws. */
+export async function updateItemImage(itemNo: string, image: string): Promise<ItemWriteResult> {
+  try {
+    const res = await fetch(apiUrl(`/api/store/items/${encodeURIComponent(itemNo)}/image`), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ image }),
     });
     return (await res.json()) as ItemWriteResult;
   } catch {

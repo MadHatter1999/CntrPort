@@ -25,7 +25,7 @@ import {
   type OrderStatus,
 } from "../data/orders";
 import { requireAuth, signOutAdmin, currentUserLabel } from "./auth";
-import { updateItem } from "../data/api";
+import { updateItem, updateItemImage } from "../data/api";
 import {
   PAYMENT_PROVIDERS,
   getProvider,
@@ -876,6 +876,13 @@ function saveForm(form: HTMLFormElement): void {
         else if (r.message && !r.disabled && !r.notFound)
           toast("Saved locally · Counterpoint update failed");
       });
+      // A freshly uploaded image (data: URL) is written into CP's ItemImages
+      // folder so the new photo shows in Counterpoint too.
+      if (p.image && p.image.startsWith("data:")) {
+        void updateItemImage(p.id, p.image).then((r) => {
+          if (r.ok && !r.skipped) toast("Image saved to Counterpoint");
+        });
+      }
     }
   } else if (s === "categories") {
     if (!d.name) return toast("Name is required");
