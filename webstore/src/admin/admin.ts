@@ -25,7 +25,7 @@ import {
   type OrderStatus,
 } from "../data/orders";
 import { requireAuth, signOutAdmin, currentUserLabel } from "./auth";
-import { updateItem, updateItemImage } from "../data/api";
+import { updateItem, updateItemImage, cancelOrder } from "../data/api";
 import {
   PAYMENT_PROVIDERS,
   getProvider,
@@ -177,6 +177,11 @@ function input(label: string, name: string, value: string | number = "", type = 
   return `<label class="fld"><span>${esc(label)}</span>
     <input data-field="${name}" type="${type}" value="${esc(String(value))}" ${attrs} /></label>`;
 }
+function checkbox(label: string, name: string, checked: boolean, hint = ""): string {
+  return `<label class="fld fld--check">
+    <span>${esc(label)}${hint ? `<small class="muted">${esc(hint)}</small>` : ""}</span>
+    <input data-field="${name}" type="checkbox" ${checked ? "checked" : ""} /></label>`;
+}
 function imageField(label: string, name: string, value = ""): string {
   return `<div class="fld"><span>${esc(label)}</span>
     <div class="imgfield">
@@ -318,12 +323,13 @@ function listStores(): string {
     [s.name, s.address, s.phone, ...Object.values(s.names || {})].join(" "),
   )
     .map(
-      (s) => `<tr>
-      <td><b>${esc(s.name)}</b></td>
+      (s) => `<tr${s.hidden ? ' class="row--muted"' : ""}>
+      <td><b>${esc(s.name)}</b>${s.hidden ? ' <span class="pill pill--off">Hidden</span>' : ""}</td>
       <td class="muted">${esc(s.address)}</td>
       <td>${esc(s.phone)}</td>
       <td class="muted">${esc(s.monSat)} · ${esc(s.sun)}</td>
       <td class="row">
+        <button class="btn btn--sm" data-toggle-vis="${s.id}">${s.hidden ? "Show" : "Hide"}</button>
         <button class="btn btn--sm" data-edit="${s.id}">Edit</button>
         <button class="btn btn--sm btn--danger" data-del="${s.id}">Delete</button>
       </td></tr>`,
@@ -346,6 +352,7 @@ function formStore(s: Partial<StoreInfo>): string {
       ${input("Mon–Sat hours", "monSat", s.monSat || "")}
       ${input("Sun hours", "sun", s.sun || "")}
     </div>
+    ${checkbox("Show on storefront", "visible", !s.hidden, "Customers can see and pick this location. Turn off for non-customer sites like off-site storage.")}
     ${formFoot(isNew ? undefined : s.id)}
   </form>`;
 }
@@ -826,8 +833,9 @@ function readForm(form: HTMLFormElement): Record<string, any> {
   form.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-field]").forEach((el) => {
     const path = el.dataset.field!.split(".");
     let value: any = el.value.trim();
-    if ((el as HTMLInputElement).type === "number") value = value === "" ? undefined : Number(value);
-    if (value === "") value = undefined;
+    if ((el as HTMLInputElement).type === "checkbox") value = (el as HTMLInputElement).checked;
+    else if ((el as HTMLInputElement).type === "number") value = value === "" ? undefined : Number(value);
+    else if (value === "") value = undefined;
     let o = obj;
     for (let i = 0; i < path.length - 1; i++) o = o[path[i]] ??= {};
     o[path[path.length - 1]] = value;
@@ -873,8 +881,9 @@ function saveForm(form: HTMLFormElement): void {
         unit: p.unit,
       }).then((r) => {
         if (r.ok) toast("Saved · updated in Counterpoint");
-        else if (r.message && !r.disabled && !r.notFound)
-          toast("Saved locally · Counterpoint update failed");
+        else if (r.disabled) toast("Saved locally · CP write is disabled (CP_ALLOW_ITEM_WRITE)");
+        else if (r.notFound) toast("Saved locally · item is not in Counterpoint");
+        else toast("Saved locally · Counterpoint update failed: " + (r.message || ""));
       });
       // A freshly uploaded image (data: URL) is written into CP's ItemImages
       // folder so the new photo shows in Counterpoint too.
@@ -906,6 +915,7 @@ function saveForm(form: HTMLFormElement): void {
       phone: d.phone || "",
       monSat: d.monSat || "",
       sun: d.sun || "",
+      hidden: !d.visible,
     };
     upsert(DB.stores, st);
   } else if (s === "slides") {
@@ -921,8 +931,23 @@ function saveForm(form: HTMLFormElement): void {
   } else if (s === "orders") {
     const existing = find(DB.orders, view.editing as string);
     if (!existing) return;
+    const wasCancelled = existing.status === "cancelled";
     if (d.status) existing.status = d.status as OrderStatus;
     updateOrder(existing.id, { status: existing.status }); // localStorage + Firestore
+    // Newly cancelled -> delete the linked Counterpoint ticket (feedback in all
+    // cases so it's never a silent no-op).
+    if (existing.status === "cancelled" && !wasCancelled) {
+      if (!existing.cpDocId) {
+        toast("Cancelled — no linked Counterpoint ticket on this order");
+      } else {
+        void cancelOrder(existing.cpDocId).then((r) => {
+          if (r.ok) toast("Cancelled · Counterpoint ticket deleted");
+          else if (r.notFound) toast("Cancelled — CP ticket already gone");
+          else if (r.disabled) toast("Cancelled locally · CP delete is disabled (CP_ALLOW_ITEM_WRITE)");
+          else toast("Cancelled locally · CP delete failed: " + (r.message || ""));
+        });
+      }
+    }
     view.editing = null;
     render();
     return toast("Saved");
@@ -1020,7 +1045,18 @@ document.addEventListener("click", (e) => {
   const act = el.closest<HTMLElement>("[data-act]")?.dataset.act;
   const edit = el.closest<HTMLElement>("[data-edit]")?.dataset.edit;
   const del = el.closest<HTMLElement>("[data-del]")?.dataset.del;
+  const toggleVis = el.closest<HTMLElement>("[data-toggle-vis]")?.dataset.toggleVis;
 
+  if (toggleVis) {
+    const st = find(DB.stores, toggleVis);
+    if (st) {
+      st.hidden = !st.hidden;
+      saveStores(DB.stores);
+      render();
+      toast(st.hidden ? `${st.name} hidden from storefront` : `${st.name} now visible on storefront`);
+    }
+    return;
+  }
   if (edit) {
     view.editing = edit;
     return render();

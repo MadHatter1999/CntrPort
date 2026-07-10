@@ -11,6 +11,11 @@ export interface StoreInfo {
   phone: string;
   monSat: string;
   sun: string;
+  /** When true, this location is hidden from the storefront (not shown in the
+   *  "Visit us" grid, footer, locations map, or as a checkout pickup option).
+   *  Used for non-customer sites like off-site storage. Default (undefined) =
+   *  visible, so locations loaded from Counterpoint show unless hidden here. */
+  hidden?: boolean;
 }
 
 /** No hard-coded locations - they come from Counterpoint at runtime. */

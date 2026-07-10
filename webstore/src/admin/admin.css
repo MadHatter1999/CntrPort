@@ -82,7 +82,10 @@ tr:hover td { background: #fcfbf8; }
 .pill--popular { background: #fbe3e4; color: var(--brand-dark); }
 .pill--sale { background: #fdf0cf; color: #7a5a00; }
 .pill--live { background: #e6f4ea; color: var(--ok); }
+.pill--off { background: #ececec; color: #8a8a8a; }
 .muted { color: var(--muted); }
+.row--muted td { opacity: 0.55; }
+.row--muted td:last-child { opacity: 1; }
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 
 /* Forms */
@@ -333,6 +336,15 @@ tr:hover td { background: #fcfbf8; }
   gap: 10px;
 }
 .pay-enable input { width: 20px; height: 20px; }
+.fld--check {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.fld--check span { display: flex; flex-direction: column; gap: 2px; }
+.fld--check small { font-weight: 400; font-size: 0.8rem; }
+.fld--check input { width: 20px; height: 20px; flex: none; }
 .fld .req { color: var(--brand); font-style: normal; }
 .pay-secure {
   display: flex;

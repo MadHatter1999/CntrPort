@@ -351,6 +351,86 @@ def register_store_routes(
             log.info("store_products failed: %s", exc)
             return jsonify([])
 
+    # ── Planned promotions (confirmed at checkout) ────────────────────────
+    def _active_promo_price(cur, item_no: str) -> float | None:
+        """Lowest planned-promo price active TODAY for this item at the order's
+        store, or None. Same rule the product list uses (IM_PLAN_PROMO_RUL gated
+        by the group's date window + store), but resolved per item at order time
+        so it reflects the current promo, not a stale page-load price."""
+        if not (_table_exists(cur, "IM_PLAN_PROMO_RUL") and _table_exists(cur, "IM_PLAN_PROMO_GRP")):
+            return None
+        promo_str = str(config.get("doc_str_id") or config.get("promo_str_id") or "").strip()
+        sql = (
+            "SELECT MIN(r.PROMO_PRC) FROM IM_PLAN_PROMO_RUL r "
+            "JOIN IM_PLAN_PROMO_GRP g ON g.GRP_COD = r.GRP_COD "
+            "WHERE r.ITEM_NO = ? "
+            "AND CAST(GETDATE() AS date) BETWEEN CAST(g.BEG_DAT AS date) AND CAST(g.END_DAT AS date)"
+        )
+        params: list[Any] = [item_no]
+        if promo_str:
+            sql += " AND (g.STR_ID = ? OR g.STR_ID IS NULL OR g.STR_ID = '')"
+            params.append(promo_str)
+        try:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return float(row[0]) if row and row[0] is not None else None
+        except Exception:  # pragma: no cover
+            return None
+
+    @app.post("/api/store/promotions/confirm")
+    def store_promotions_confirm():
+        """Re-price a cart against currently-active planned promotions so checkout
+        shows/charges exactly what the order will post. Returns the applied price
+        (promo if active today, else the item's regular price) per line."""
+        payload = request.get_json(silent=True) or {}
+        items = payload.get("items") or []
+        out: list[dict[str, Any]] = []
+        subtotal = 0.0
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                cols = get_existing_columns("IM_ITEM")
+                price_col = next((c for c in ("PRC_1", "REG_PRC", "PRC_2") if c in cols), "PRC_1")
+                for it in items:
+                    item_no = str(it.get("id", "")).strip()
+                    try:
+                        qty = float(it.get("qty") or 0)
+                    except (TypeError, ValueError):
+                        qty = 0
+                    if not item_no or qty <= 0:
+                        continue
+                    cur.execute(f"SELECT TOP (1) {price_col} FROM IM_ITEM WHERE ITEM_NO = ?", item_no)
+                    row = cur.fetchone()
+                    reg = float(row[0]) if row and row[0] is not None else float(it.get("price") or 0)
+                    promo = _active_promo_price(cur, item_no)
+                    on_promo = promo is not None and promo < reg
+                    applied = promo if on_promo else reg
+                    # Required kit-component deposit(s) per unit (e.g. bottle
+                    # deposit) - CP adds these to the ticket, so charge them here.
+                    deposit = 0.0
+                    try:
+                        cur.execute(
+                            "SELECT c.COMP_QTY, i.PRC_1 FROM IM_KIT_COMP c "
+                            "JOIN IM_ITEM i ON i.ITEM_NO = c.COMP_ITEM_NO "
+                            "WHERE c.ITEM_NO = ? AND c.REQUIRED_COMP = 'Y'",
+                            item_no,
+                        )
+                        for cq, cp in cur.fetchall():
+                            deposit += float(cq or 1) * float(cp or 0)
+                    except Exception:  # pragma: no cover
+                        deposit = 0.0
+                    subtotal += (applied + deposit) * qty
+                    out.append({
+                        "id": item_no, "qty": qty, "regPrice": round(reg, 2),
+                        "promoPrice": round(promo, 2) if promo is not None else None,
+                        "price": round(applied, 2), "onPromo": on_promo,
+                        "deposit": round(deposit, 2),
+                    })
+        except Exception as exc:  # pragma: no cover
+            log.info("promotions confirm failed: %s", exc)
+            return jsonify({"ok": False, "items": [], "subtotal": 0.0})
+        return jsonify({"ok": True, "items": out, "subtotal": round(subtotal, 2)})
+
     # ── Item image (best-effort, always renders something) ─────────────────
     # Order of preference:
     #   1. the file on the CP server (Configuration\ItemImages\<ITEM_NO>.<ext>)
@@ -473,29 +553,73 @@ def register_store_routes(
         # valid store/station/drawer/user, DOC_TYP is "O" (order), and each line
         # needs LIN_TYP "O". Getting any of this wrong means CP silently drops or
         # 500s the ticket - which is why earlier orders never landed.
-        lines: list[dict[str, Any]] = []
-        for it in items:
-            try:
-                qty = float(it.get("qty") or 0)
-            except (TypeError, ValueError):
-                qty = 0
-            item_no = str(it.get("id", "")).strip()
-            if qty <= 0 or not item_no:
-                continue
-            line: dict[str, Any] = {
-                "LIN_TYP": "O",
-                "ITEM_NO": item_no,
-                "QTY_SOLD": str(qty),
-            }
-            if it.get("price") is not None:
+        def _clean_items() -> list[tuple[str, float, float | None]]:
+            out: list[tuple[str, float, float | None]] = []
+            for it in items:
+                item_no = str(it.get("id", "")).strip()
                 try:
-                    line["PRC"] = str(float(it["price"]))
+                    qty = float(it.get("qty") or 0)
                 except (TypeError, ValueError):
-                    pass
-            lines.append(line)
+                    qty = 0
+                if not item_no or qty <= 0:
+                    continue
+                cp = None
+                if it.get("price") is not None:
+                    try:
+                        cp = float(it["price"])
+                    except (TypeError, ValueError):
+                        cp = None
+                out.append((item_no, qty, cp))
+            return out
 
-        if not lines:
+        clean = _clean_items()
+        if not clean:
             return jsonify({"ok": False, "message": "No valid line items."}), 400
+
+        # Build the CP lines in one SQL pass so pricing/kits are server-authoritative:
+        #  * price = the active planned-promo price when one applies today (else the
+        #    submitted price) - the promo is confirmed HERE, at order time, so it
+        #    can't be a stale page-load price and only applies if still active;
+        #  * each item's required kit components (e.g. bottle deposits, IM_KIT_COMP)
+        #    are added as their own lines since the NCR API won't expand kits.
+        # If SQL is unavailable the order still goes through at the submitted prices.
+        lines: list[dict[str, Any]] = []
+        try:
+            with get_sql_connection() as _cn:
+                _cur = _cn.cursor()
+                for item_no, qty, client_price in clean:
+                    promo = _active_promo_price(_cur, item_no)
+                    if promo is not None and (client_price is None or promo < client_price):
+                        price = promo
+                    else:
+                        price = client_price
+                    line: dict[str, Any] = {"LIN_TYP": "O", "ITEM_NO": item_no, "QTY_SOLD": str(qty)}
+                    if price is not None:
+                        line["PRC"] = str(price)
+                    lines.append(line)
+
+                    _cur.execute(
+                        "SELECT COMP_ITEM_NO, COMP_QTY FROM IM_KIT_COMP "
+                        "WHERE ITEM_NO = ? AND REQUIRED_COMP = 'Y' ORDER BY COMP_SEQ_NO",
+                        item_no,
+                    )
+                    for r in _cur.fetchall():
+                        comp = str(r[0]).strip() if r[0] else ""
+                        if not comp:
+                            continue
+                        try:
+                            cqty = float(r[1] or 1)
+                        except (TypeError, ValueError):
+                            cqty = 1.0
+                        lines.append({"LIN_TYP": "O", "ITEM_NO": comp, "QTY_SOLD": str(cqty * qty)})
+        except Exception as exc:  # pragma: no cover
+            log.warning("store_order: SQL line build failed (%s); using submitted prices", exc)
+            lines = []
+            for item_no, qty, client_price in clean:
+                line = {"LIN_TYP": "O", "ITEM_NO": item_no, "QTY_SOLD": str(qty)}
+                if client_price is not None:
+                    line["PRC"] = str(client_price)
+                lines.append(line)
 
         hdr: dict[str, Any] = {
             "STR_ID": config.get("doc_str_id") or "MAIN",
@@ -511,36 +635,146 @@ def register_store_routes(
 
         document = {"PS_DOC_HDR": hdr}
 
+        # Loud diagnostics: print the exact request sent to Counterpoint and its
+        # reply so a rejected ticket is visible in the console (the storefront
+        # always gets 200, so this is the only place the CP result shows).
+        log.info("ORDER -> CP POST /Document: %s", json.dumps(document))
         try:
             status, body, err = cp_api_request("POST", "/Document", json=document)
         except Exception as exc:  # pragma: no cover
             log.warning("store_order: CP Document POST raised: %s", exc)
             status, body, err = 0, None, str(exc)
+        log.info("ORDER <- CP /Document reply: status=%s err=%s body=%s",
+                 status, err, json.dumps(body) if isinstance(body, (dict, list)) else body)
 
-        # NCR returns the created document; the id may be top-level or nested
-        # under PS_DOC_HDR depending on version.
+        # NCR returns { "Documents": [ { "DOC_ID": <n>, ... } ], "ErrorCode": ... }.
+        # Pull the created document id out of that (with fallbacks for other shapes).
         doc_id = None
         if isinstance(body, dict):
-            doc_id = (
-                body.get("DocId") or body.get("DOC_ID") or body.get("Id")
-                or body.get("docId")
-            )
+            docs = body.get("Documents")
+            if isinstance(docs, list) and docs and isinstance(docs[0], dict):
+                doc_id = docs[0].get("DOC_ID") or docs[0].get("DocId") or docs[0].get("Id")
+            if not doc_id:
+                doc_id = (
+                    body.get("DocId") or body.get("DOC_ID") or body.get("Id")
+                    or body.get("docId")
+                )
             if not doc_id and isinstance(body.get("PS_DOC_HDR"), dict):
                 doc_id = body["PS_DOC_HDR"].get("DOC_ID") or body["PS_DOC_HDR"].get("DocId")
 
         ok = bool(status and 200 <= status < 300)
         if not ok:
             log.warning("store_order: CP /Document rejected (status=%s): %s", status, err or body)
+
+        # Nest + normalize deposit lines using Counterpoint's own
+        # ReinsertTicketDeposits stored procedure (the store's canonical deposit
+        # fix). The NCR API adds bottle deposits as FLAT lines; CP groups/nests a
+        # deposit under its parent by LINK_LIN_GUID = parent line's LIN_GUID,
+        # which is ALSO the sproc's grouping key. So we:
+        #   1. point each deposit's LINK_LIN_GUID at the merchandise line above it
+        #      (and flag that parent IS_KIT_PAR='Y'), then
+        #   2. EXEC dbo.ReinsertTicketDeposits @TktNo, which deletes each deposit
+        #      and re-inserts it cleanly (canonical qty/PRC/EXT_PRC/CATEG_COD/
+        #      IS_TXBL), preserving the per-parent LINK so it stays nested.
+        # We emit each parent immediately followed by its deposit(s), so the
+        # parent is the most recent non-deposit line before each deposit.
+        if ok and doc_id is not None:
+            try:
+                with get_sql_connection() as _cn:
+                    _cur = _cn.cursor()
+                    _cur.execute(
+                        "SELECT LIN_SEQ_NO, LIN_GUID, ITEM_NO, CATEG_COD, DESCR, TKT_NO "
+                        "FROM PS_DOC_LIN WHERE DOC_ID = ? ORDER BY LIN_SEQ_NO",
+                        int(doc_id),
+                    )
+                    rows = _cur.fetchall()
+                    tkt_no = rows[0].TKT_NO if rows else None
+                    parent_guid = None
+                    parent_seq = None
+                    dep_links: list[tuple[Any, Any]] = []   # (parent_guid, deposit_seq)
+                    parent_seqs: set[Any] = set()           # parents that got a deposit child
+                    for r in rows:
+                        item = (r.ITEM_NO or "").upper()
+                        categ = (r.CATEG_COD or "")
+                        descr = (r.DESCR or "").lower()
+                        is_dep = item.startswith("DEPOSIT") or categ == "BOTTLE DEP" or descr.startswith("bottle deposit")
+                        if is_dep:
+                            if parent_guid is not None:
+                                dep_links.append((parent_guid, r.LIN_SEQ_NO))
+                                parent_seqs.add(parent_seq)
+                        else:
+                            parent_guid = r.LIN_GUID
+                            parent_seq = r.LIN_SEQ_NO
+                    # 1) LINK each deposit to its parent (sproc grouping key) and
+                    #    mark the parent as a kit parent.
+                    for pg, seq in dep_links:
+                        _cur.execute(
+                            "UPDATE PS_DOC_LIN SET LINK_LIN_GUID = ?, PAR_LIN_GUID = NULL "
+                            "WHERE DOC_ID = ? AND LIN_SEQ_NO = ?",
+                            pg, int(doc_id), seq,
+                        )
+                    for seq in parent_seqs:
+                        _cur.execute(
+                            "UPDATE PS_DOC_LIN SET IS_KIT_PAR = 'Y' "
+                            "WHERE DOC_ID = ? AND LIN_SEQ_NO = ?",
+                            int(doc_id), seq,
+                        )
+                    if dep_links:
+                        _cn.commit()
+                    # 2) Run the store's canonical deposit re-insert.
+                    if dep_links and tkt_no:
+                        _cur.execute("EXEC dbo.ReinsertTicketDeposits @TktNo = ?", tkt_no)
+                        while _cur.nextset():   # drain the sproc's result set(s)
+                            pass
+                        _cn.commit()
+                        log.info(
+                            "store_order: linked %d deposit(s) + ReinsertTicketDeposits on ticket %s (doc %s)",
+                            len(dep_links), tkt_no, doc_id,
+                        )
+            except Exception as exc:  # pragma: no cover
+                log.warning("store_order: deposit nesting/reinsert failed: %s", exc)
+
         # Always 200 to the storefront: the admin screen is the source of truth
         # and logs the order regardless; surface CP success/failure in the body.
         return jsonify({
             "ok": ok,
             "ref": payload.get("ref"),
-            "doc_id": doc_id,
+            # As a STRING - CP DOC_IDs are 15+ digits and would lose precision as
+            # a JS number, which would then fail to match the ticket on cancel.
+            "doc_id": str(doc_id) if doc_id is not None else None,
             "counterpoint_status": status,
             "counterpoint_error": err,
             "counterpoint_response": body if ok else (body or err),
         })
+
+    # ── Cancel a web order -> delete the Counterpoint ticket ──────────────
+    # NCR's API can't delete a document, so cancelling in the admin runs CP's own
+    # USP_DEL_TKT stored proc (the same delete Counterpoint uses) against the
+    # unposted ticket. Guarded by CP_ALLOW_ITEM_WRITE and only ever touches an
+    # OPEN document (still in PS_DOC_HDR) - a posted sale is left untouched.
+    @app.delete("/api/store/order/<doc_id>")
+    def store_order_cancel(doc_id: str):
+        if not config.get("allow_item_write"):
+            return jsonify({"ok": False, "disabled": True,
+                            "message": "CP writes disabled (set CP_ALLOW_ITEM_WRITE=true)."}), 200
+        try:
+            did = int(str(doc_id).strip())
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": "Invalid document id."}), 400
+        try:
+            with get_sql_connection() as cn:
+                cur = cn.cursor()
+                cur.execute("SELECT DOC_ID FROM PS_DOC_HDR WHERE DOC_ID = ?", did)
+                if not cur.fetchone():
+                    return jsonify({"ok": False, "notFound": True,
+                                    "message": "Ticket not found (already removed, or posted)."}), 404
+                cur.execute("EXEC USP_DEL_TKT @DocId = ?", did)
+                cn.commit()
+                log.info("order cancel: deleted CP ticket %s via USP_DEL_TKT", did)
+                return jsonify({"ok": True, "doc_id": did})
+        except Exception as exc:  # pragma: no cover
+            log.warning("order cancel %s failed: %s", did, exc)
+            return jsonify({"ok": False, "message": f"Ticket delete failed: {exc}"}), 500
 
     # ── Payment processor config ──────────────────────────────────────────
     # Stored server-side (holds gateway secret keys) and NEVER shipped whole to

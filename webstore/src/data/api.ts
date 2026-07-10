@@ -113,6 +113,49 @@ export async function updateItemImage(itemNo: string, image: string): Promise<It
   }
 }
 
+export interface PromoLine {
+  id: string;
+  qty: number;
+  regPrice: number;
+  promoPrice: number | null;
+  price: number;
+  onPromo: boolean;
+  /** Required kit-component deposit per unit (e.g. bottle deposit). */
+  deposit?: number;
+}
+
+/** Re-price the cart against currently-active planned promotions (confirmed at
+ *  checkout, so it reflects the live promo, not a stale page-load price). */
+export async function confirmPromotions(
+  items: { id: string; qty: number; price?: number }[],
+): Promise<{ ok: boolean; items: PromoLine[]; subtotal: number }> {
+  try {
+    const res = await fetch(apiUrl("/api/store/promotions/confirm"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) return { ok: false, items: [], subtotal: 0 };
+    return (await res.json()) as { ok: boolean; items: PromoLine[]; subtotal: number };
+  } catch {
+    return { ok: false, items: [], subtotal: 0 };
+  }
+}
+
+/** Cancel a web order by deleting its Counterpoint ticket (runs CP's USP_DEL_TKT
+ *  server-side). Only affects CP when CP_ALLOW_ITEM_WRITE is enabled. Never throws. */
+export async function cancelOrder(docId: string | number): Promise<ItemWriteResult> {
+  try {
+    const res = await fetch(apiUrl(`/api/store/order/${encodeURIComponent(String(docId))}`), {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
+    return (await res.json()) as ItemWriteResult;
+  } catch {
+    return { ok: false, message: "network error" };
+  }
+}
+
 /** POST a placed order to Counterpoint (creates a Document). Never throws. */
 export async function postOrder(payload: unknown): Promise<OrderResult> {
   try {

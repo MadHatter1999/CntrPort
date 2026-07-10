@@ -62,6 +62,9 @@ export const getCategories = (): Category[] => read().categories ?? live.categor
 export const getProducts = (): Product[] => read().products ?? live.products;
 export const getStores = (): StoreInfo[] =>
   read().stores ?? (live.config.stores.length ? live.config.stores : defaultStores);
+/** Locations the storefront should show (customers). Excludes any the admin has
+ *  marked hidden. The admin tool itself uses getStores() to see all of them. */
+export const getVisibleStores = (): StoreInfo[] => getStores().filter((s) => !s.hidden);
 export const getSlides = (): Slide[] => {
   const s = read().slides;
   return s && s.length ? s : defaultSlides;

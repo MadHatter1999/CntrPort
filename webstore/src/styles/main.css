@@ -620,6 +620,11 @@ button, a, summary, label, .card, .stepper, .chip, .cat-tile { touch-action: man
 .footer__col h4 { color: #fff; font-size: 0.95rem; margin-bottom: 4px; }
 .footer__col a { font-size: 0.88rem; opacity: 0.85; transition: opacity 0.15s; }
 .footer__col a:hover { opacity: 1; color: #fff; }
+#footer-stores { display: flex; flex-direction: column; gap: 12px; }
+.footer__store { display: flex; flex-direction: column; gap: 2px; }
+.footer__store-name { color: #fff; font-size: 0.88rem; font-weight: 600; opacity: 0.95; }
+.footer__store-phone { font-size: 0.84rem; opacity: 0.75; }
+.footer__store-phone:hover { opacity: 1; color: #fff; }
 .footer__legal {
   border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding: 16px;
@@ -1060,6 +1065,17 @@ textarea.co-input { resize: vertical; }
 .co-line__qty { color: var(--brand-dark); font-weight: 700; }
 .co-line__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .co-line__price { font-weight: 650; white-space: nowrap; }
+.co-line__was { color: var(--muted); text-decoration: line-through; font-weight: 500; margin-right: 4px; }
+.co-line__promo {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--brand-dark);
+  background: #fbe3e4;
+  padding: 1px 6px;
+  border-radius: 999px;
+}
 .co-totals { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; margin: 0; }
 .co-totals > div { display: flex; justify-content: space-between; font-size: 0.9rem; }
 .co-totals dt { color: var(--muted); }

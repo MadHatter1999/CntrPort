@@ -1,6 +1,6 @@
 import { state, setCheckoutOpen, clearCart } from "../state/store";
-import { getProducts, getStores, getConfig } from "../data/cms";
-import { postOrder } from "../data/api";
+import { getProducts, getVisibleStores, getConfig } from "../data/cms";
+import { postOrder, confirmPromotions } from "../data/api";
 import { fetchPaymentStatus, providerLabel, type PaymentStatus } from "../data/payments";
 import { t } from "../i18n";
 import { money } from "../lib/format";
@@ -27,6 +27,10 @@ let fulfillment: Fulfillment = "pickup";
 // demo and is refreshed (secret-free) each time checkout opens.
 let payStatus: PaymentStatus = { mode: "demo", provider: "", environment: "", publicConfig: {} };
 
+// Prices confirmed against active planned promotions at checkout time, plus each
+// item's required deposit (bottle deposit). Empty until the confirm call resolves.
+let confirmed: Record<string, { price: number; regPrice: number; onPromo: boolean; deposit: number }> = {};
+
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 // ── derived from the live cart ───────────────────────────────────
@@ -36,17 +40,21 @@ function cartItems(): OrderItem[] {
   for (const id in state.cart) {
     const p = byId.get(id);
     if (!p) continue;
-    items.push({ id: p.id, name: p.name, price: p.price, unit: p.unit, qty: state.cart[id], image: p.image });
+    // A confirmed planned-promo price (from the server) wins over the page price.
+    const price = confirmed[id]?.price ?? p.price;
+    items.push({ id: p.id, name: p.name, price, unit: p.unit, qty: state.cart[id], image: p.image });
   }
   return items;
 }
 
 function totals(items: OrderItem[], fulfil: Fulfillment) {
   const subtotal = round2(items.reduce((s, i) => s + i.price * i.qty, 0));
+  // Required deposits (bottle deposit etc.) - CP charges these, so we do too.
+  const deposits = round2(items.reduce((s, i) => s + (confirmed[i.id]?.deposit ?? 0) * i.qty, 0));
   const shipping = fulfil === "shipping" ? SHIPPING_FLAT : 0;
   const tax = round2(subtotal * getConfig().taxRate);
-  const total = round2(subtotal + shipping + tax);
-  return { subtotal, shipping, tax, total };
+  const total = round2(subtotal + deposits + shipping + tax);
+  return { subtotal, deposits, shipping, tax, total };
 }
 
 // ── open / close ─────────────────────────────────────────────────
@@ -54,12 +62,24 @@ export function openCheckout(): void {
   if (Object.keys(state.cart).length === 0) return;
   placed = null;
   fulfillment = "pickup";
+  confirmed = {};
   renderCheckout();
   setCheckoutOpen(true);
   // Refresh the live/demo decision from the server (secret-free). Re-render the
   // form once known so the payment section reflects the configured processor.
   void fetchPaymentStatus().then((s) => {
     payStatus = s;
+    if (!placed) renderCheckout();
+  });
+  // Confirm planned promotions against the live catalogue with the real cart
+  // quantities, then re-render so the totals reflect the confirmed prices.
+  const cartForPromo = Object.keys(state.cart).map((id) => ({ id, qty: state.cart[id] }));
+  void confirmPromotions(cartForPromo).then((res) => {
+    if (!res.ok) return;
+    confirmed = {};
+    for (const l of res.items) {
+      confirmed[l.id] = { price: l.price, regPrice: l.regPrice, onPromo: l.onPromo, deposit: l.deposit ?? 0 };
+    }
     if (!placed) renderCheckout();
   });
 }
@@ -81,21 +101,38 @@ function summaryRows(items: OrderItem[]): string {
     .map((it) => {
       const p = byId.get(it.id);
       const name = p ? prodName(p, state.lang) : it.name;
+      const c = confirmed[it.id];
+      const priceHtml =
+        c?.onPromo
+          ? `<span class="co-line__was">${money(c.regPrice * it.qty, state.lang)}</span> ${money(it.price * it.qty, state.lang)}`
+          : money(it.price * it.qty, state.lang);
       return /* html */ `
       <div class="co-line">
         <span class="co-line__qty">${it.qty}×</span>
-        <span class="co-line__name" data-name-id="${it.id}">${esc(name)}</span>
-        <span class="co-line__price">${money(it.price * it.qty, state.lang)}</span>
+        <span class="co-line__name" data-name-id="${it.id}">${esc(name)}${c?.onPromo ? ` <span class="co-line__promo">${esc(t("checkout.promo"))}</span>` : ""}</span>
+        <span class="co-line__price">${priceHtml}</span>
       </div>`;
     })
     .join("");
 }
 
-function totalsBlock(t0: ReturnType<typeof totals>): string {
+function totalsBlock(t0: {
+  subtotal: number;
+  shipping: number;
+  tax: number;
+  total: number;
+  deposits?: number;
+}): string {
   const shipVal = t0.shipping === 0 ? t("checkout.free") : money(t0.shipping, state.lang);
+  const deposits = t0.deposits ?? 0;
+  const depositRow =
+    deposits > 0
+      ? `<div><dt>${esc(t("checkout.deposits"))}</dt><dd>${money(deposits, state.lang)}</dd></div>`
+      : "";
   return /* html */ `
     <dl class="co-totals">
       <div><dt>${esc(t("checkout.subtotal"))}</dt><dd>${money(t0.subtotal, state.lang)}</dd></div>
+      ${depositRow}
       <div><dt data-ship-label>${esc(t("checkout.ship"))}</dt><dd data-ship>${shipVal}</dd></div>
       <div><dt>${esc(t("checkout.tax"))}</dt><dd>${money(t0.tax, state.lang)}</dd></div>
       <div class="co-totals__grand"><dt>${esc(t("checkout.total"))}</dt><dd data-grand>${money(t0.total, state.lang)}</dd></div>
@@ -114,7 +151,7 @@ function fld(label: string, name: string, type = "text", attrs = "", placeholder
 function formHTML(): string {
   const items = cartItems();
   const t0 = totals(items, fulfillment);
-  const stores = getStores();
+  const stores = getVisibleStores();
   const storeOpts = stores
     .map((s) => `<option value="${esc(s.id)}">${esc(storeLabel(s, state.lang))}</option>`)
     .join("");
@@ -302,7 +339,7 @@ function placeOrder(form: HTMLFormElement): void {
   // deployment must hand card capture to a PCI-compliant processor (e.g. Stripe
   // hosted fields) so the number never touches our code at all.
   const cardNo = val(form, "card");
-  const stores = getStores();
+  const stores = getVisibleStores();
   const storeId = fulfillment === "pickup" ? val(form, "storeId") || stores[0]?.id : undefined;
   const store = stores.find((s) => s.id === storeId);
 

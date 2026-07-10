@@ -1,4 +1,4 @@
-import { getCategories, getProducts, getStores, getSlides, getConfig } from "../data/cms";
+import { getCategories, getProducts, getVisibleStores, getSlides, getConfig } from "../data/cms";
 import { telHref, mapLinks } from "../data/stores";
 import { pages } from "../data/pages";
 import type { Product, Category } from "../data/types";
@@ -87,7 +87,7 @@ function phoneBtn(phone: string): string {
 }
 
 export function renderStores(): void {
-  const stores = getStores();
+  const stores = getVisibleStores();
   $("#store-grid").innerHTML = stores
     .map(
       (s) => /* html */ `
@@ -104,16 +104,18 @@ export function renderStores(): void {
     .join("");
 
   $("#footer-stores").innerHTML = stores
-    .map((s) =>
-      s.phone
-        ? `<a href="${telHref(s.phone)}">${esc(storeLabel(s, state.lang))}: ${esc(s.phone)}</a>`
-        : `<span>${esc(storeLabel(s, state.lang))}</span>`,
+    .map(
+      (s) => /* html */ `
+      <div class="footer__store">
+        <span class="footer__store-name">${esc(storeLabel(s, state.lang))}</span>
+        ${s.phone ? `<a class="footer__store-phone" href="${telHref(s.phone)}">${esc(s.phone)}</a>` : ""}
+      </div>`,
     )
     .join("");
 }
 
 export function renderLocations(): void {
-  $("#locations-body").innerHTML = getStores()
+  $("#locations-body").innerHTML = getVisibleStores()
     .map((s) => {
       const m = mapLinks(s.address);
       return /* html */ `
