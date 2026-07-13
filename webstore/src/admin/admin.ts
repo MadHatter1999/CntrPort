@@ -977,10 +977,24 @@ function removeItem(section: Section, id: string): void {
             ? DB.orders
             : DB.slides;
   const i = (arr as { id: string }[]).findIndex((x) => x.id === id);
+  const removed = i >= 0 ? (arr as { id: string }[])[i] : undefined;
   if (i >= 0) arr.splice(i, 1);
   persist(section);
-  // Orders also live in Firestore - remove the remote doc.
-  if (section === "orders") removeOrder(id);
+  // Orders also live in Firestore - remove the remote doc, and delete the
+  // linked Counterpoint ticket (unless a cancel already did) so deleting an
+  // order never leaves its ticket open at the POS.
+  if (section === "orders") {
+    removeOrder(id);
+    const o = removed as Order | undefined;
+    if (o && o.status !== "cancelled" && o.cpDocId) {
+      void cancelOrder(o.cpDocId).then((r) => {
+        if (r.ok) toast("Deleted · Counterpoint ticket deleted");
+        else if (r.notFound) toast("Deleted — CP ticket already gone");
+        else if (r.disabled) toast("Deleted locally · CP delete is disabled (CP_ALLOW_ITEM_WRITE)");
+        else toast("Deleted locally · CP delete failed: " + (r.message || ""));
+      });
+    }
+  }
 }
 
 // ── Payments: collect the form and persist to the server ─────────
