@@ -489,7 +489,7 @@ function formOrder(o: Order | undefined): string {
         <dl class="paydl">
           <div><dt>Subtotal</dt><dd>${fmtMoney(o.subtotal)}</dd></div>
           <div><dt>${o.fulfillment === "pickup" ? "Pickup" : "Delivery"}</dt><dd>${o.shipping ? fmtMoney(o.shipping) : "Free"}</dd></div>
-          <div><dt>HST (15%)</dt><dd>${fmtMoney(o.tax)}</dd></div>
+          <div><dt>HST </dt><dd>${fmtMoney(o.tax)}</dd></div>
           <div class="paydl__grand"><dt>Total</dt><dd>${fmtMoney(o.total)}</dd></div>
         </dl>
       </div>

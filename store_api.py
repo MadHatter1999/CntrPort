@@ -666,50 +666,53 @@ def register_store_routes(
         if not ok:
             log.warning("store_order: CP /Document rejected (status=%s): %s", status, err or body)
 
-        # Nest + normalize deposit lines using Counterpoint's own
-        # ReinsertTicketDeposits stored procedure (the store's canonical deposit
-        # fix). The NCR API adds bottle deposits as FLAT lines; CP groups/nests a
-        # deposit under its parent by LINK_LIN_GUID = parent line's LIN_GUID,
-        # which is ALSO the sproc's grouping key. So we:
-        #   1. point each deposit's LINK_LIN_GUID at the merchandise line above it
-        #      (and flag that parent IS_KIT_PAR='Y'), then
-        #   2. EXEC dbo.ReinsertTicketDeposits @TktNo, which deletes each deposit
-        #      and re-inserts it cleanly (canonical qty/PRC/EXT_PRC/CATEG_COD/
-        #      IS_TXBL), preserving the per-parent LINK so it stays nested.
-        # We emit each parent immediately followed by its deposit(s), so the
-        # parent is the most recent non-deposit line before each deposit.
+        # Make each bottle-deposit line render nested + blue under its parent,
+        # exactly like a POS-entered kit ticket. The NCR /Document API adds kit
+        # components as loose lines and Counterpoint paints them RED until BOTH of
+        # these are in place - the API sets neither for API-created components:
+        #   1. PS_DOC_LIN: deposit.PAR_LIN_GUID = parent.LIN_GUID (LINK_LIN_GUID
+        #      NULL) and parent.IS_KIT_PAR = 'Y'.
+        #   2. PS_DOC_LIN_KIT: a kit-component row keyed on the DEPOSIT line's
+        #      (DOC_ID, LIN_SEQ_NO), built by USR_REPAIR_PS_DOC_LIN_KIT below.
+        # CAVEAT: CP's Ticket Entry RE-INSERTS the PS_DOC_LIN_KIT row on edit /
+        # cancel / release, which used to raise a PK violation against the row we
+        # created here. That is handled at the DB level by the INSTEAD OF INSERT
+        # trigger USR_PSDOCLINKIT_IGNOREDUP (see sql/USR_PSDOCLINKIT_IGNOREDUP.sql),
+        # which skips duplicate PKs so CP's re-insert is a harmless no-op. That
+        # trigger MUST be installed on the CP database for web-order edits to work.
+        # We deliberately do NOT run ReinsertTicketDeposits: that sproc clones the
+        # merchandise line (polluting the deposit's cost/vendor/ITEM_TYP) and
+        # clears PAR_LIN_GUID. We emit each parent immediately followed by its
+        # deposit(s), so the parent is the most recent non-deposit line seen.
         if ok and doc_id is not None:
             try:
                 with get_sql_connection() as _cn:
                     _cur = _cn.cursor()
                     _cur.execute(
-                        "SELECT LIN_SEQ_NO, LIN_GUID, ITEM_NO, CATEG_COD, DESCR, TKT_NO "
+                        "SELECT LIN_SEQ_NO, LIN_GUID, ITEM_NO, CATEG_COD, DESCR "
                         "FROM PS_DOC_LIN WHERE DOC_ID = ? ORDER BY LIN_SEQ_NO",
                         int(doc_id),
                     )
-                    rows = _cur.fetchall()
-                    tkt_no = rows[0].TKT_NO if rows else None
                     parent_guid = None
                     parent_seq = None
-                    dep_links: list[tuple[Any, Any]] = []   # (parent_guid, deposit_seq)
-                    parent_seqs: set[Any] = set()           # parents that got a deposit child
-                    for r in rows:
+                    deposits: list[tuple[Any, Any]] = []   # (parent_guid, dep_seq)
+                    parent_seqs: set[Any] = set()
+                    for r in _cur.fetchall():
                         item = (r.ITEM_NO or "").upper()
                         categ = (r.CATEG_COD or "")
                         descr = (r.DESCR or "").lower()
                         is_dep = item.startswith("DEPOSIT") or categ == "BOTTLE DEP" or descr.startswith("bottle deposit")
                         if is_dep:
                             if parent_guid is not None:
-                                dep_links.append((parent_guid, r.LIN_SEQ_NO))
+                                deposits.append((parent_guid, r.LIN_SEQ_NO))
                                 parent_seqs.add(parent_seq)
                         else:
                             parent_guid = r.LIN_GUID
                             parent_seq = r.LIN_SEQ_NO
-                    # 1) LINK each deposit to its parent (sproc grouping key) and
-                    #    mark the parent as a kit parent.
-                    for pg, seq in dep_links:
+                    # 1) PS_DOC_LIN: link each deposit to its parent + mark parents.
+                    for pg, seq in deposits:
                         _cur.execute(
-                            "UPDATE PS_DOC_LIN SET LINK_LIN_GUID = ?, PAR_LIN_GUID = NULL "
+                            "UPDATE PS_DOC_LIN SET PAR_LIN_GUID = ?, LINK_LIN_GUID = NULL "
                             "WHERE DOC_ID = ? AND LIN_SEQ_NO = ?",
                             pg, int(doc_id), seq,
                         )
@@ -719,20 +722,111 @@ def register_store_routes(
                             "WHERE DOC_ID = ? AND LIN_SEQ_NO = ?",
                             int(doc_id), seq,
                         )
-                    if dep_links:
+                    # 2) PS_DOC_LIN_KIT: build the component rows via Counterpoint's
+                    # own repair proc rather than hand-crafting them. It sources
+                    # KIT_COMP_* from the kit master (IM_KIT_COMP) - correct for any
+                    # deposit, not just 1-per-bottle - joins on the PAR_LIN_GUID links
+                    # set just above, and is idempotent (NOT EXISTS). This is the
+                    # site's sanctioned fix (see also USR_LIST_KITS_MISSING_COMPONENTS).
+                    if deposits:
+                        _cur.execute("{CALL USR_REPAIR_PS_DOC_LIN_KIT (?)}", int(doc_id))
+                        try:
+                            repair_res = [tuple(r) for r in _cur.fetchall()]
+                        except Exception:
+                            repair_res = None
                         _cn.commit()
-                    # 2) Run the store's canonical deposit re-insert.
-                    if dep_links and tkt_no:
-                        _cur.execute("EXEC dbo.ReinsertTicketDeposits @TktNo = ?", tkt_no)
-                        while _cur.nextset():   # drain the sproc's result set(s)
-                            pass
-                        _cn.commit()
-                        log.info(
-                            "store_order: linked %d deposit(s) + ReinsertTicketDeposits on ticket %s (doc %s)",
-                            len(dep_links), tkt_no, doc_id,
-                        )
+                        log.info("store_order: nested %d deposit line(s) on doc %s; "
+                                 "USR_REPAIR_PS_DOC_LIN_KIT -> %s",
+                                 len(deposits), doc_id, repair_res)
             except Exception as exc:  # pragma: no cover
-                log.warning("store_order: deposit nesting/reinsert failed: %s", exc)
+                log.warning("store_order: deposit nesting failed: %s", exc)
+
+        # Apply sales tax to the ticket. The NCR /Document API creates the ticket
+        # but does NOT run Counterpoint's tax engine (that only fires on POS/Ticket
+        # Entry), so an API order lands with TAX_AMT = 0. We replicate CP's calc
+        # using the ticket's own tax code (from AR_CUST): sum the code's authority
+        # rate(s) from SY_TAX_AUTH_RUL, apply to each taxable (IS_TXBL='Y') line,
+        # and write the three places CP stores tax so the open ticket matches a
+        # POS-entered one (e.g. OR-WHT-71650):
+        #   1. PS_DOC_LIN.TAX_AMT_ALLOC / NORM_TAX_AMT_ALLOC  (per taxable line)
+        #   2. PS_DOC_HDR_TOT.TAX_AMT / NORM_TAX_AMT / TOT / AMT_DUE  (O + R rows)
+        #   3. PS_DOC_TAX  (per-authority detail row, TAX_DOC_PART='O')
+        if ok and doc_id is not None:
+            try:
+                from decimal import Decimal, ROUND_HALF_UP
+                cent = Decimal("0.01")
+                did = int(doc_id)
+                with get_sql_connection() as _cn:
+                    _cur = _cn.cursor()
+                    hdr_row = _cur.execute(
+                        "SELECT TAX_COD FROM PS_DOC_HDR WHERE DOC_ID = ?", did
+                    ).fetchone()
+                    tax_cod = (hdr_row[0] or "").strip() if hdr_row and hdr_row[0] else ""
+                    # One rate per authority (first rule), summed across authorities.
+                    auths: list[tuple[str, str, Decimal]] = []
+                    if tax_cod:
+                        _cur.execute(
+                            "SELECT a.AUTH_COD, rl.RUL_COD, rl.TAX_PCT_1 "
+                            "FROM AR_TAX_COD_AUTH a "
+                            "JOIN SY_TAX_AUTH_RUL rl ON rl.AUTH_COD = a.AUTH_COD "
+                            "WHERE a.TAX_COD = ? ORDER BY a.SEQ_NO, rl.RUL_SEQ_NO",
+                            tax_cod,
+                        )
+                        seen: set[str] = set()
+                        for r in _cur.fetchall():
+                            ac = (r.AUTH_COD or "").strip()
+                            if ac in seen or r.TAX_PCT_1 is None:
+                                continue
+                            seen.add(ac)
+                            auths.append((ac, (r.RUL_COD or "").strip(), Decimal(str(r.TAX_PCT_1)) / Decimal("100")))
+                    total_rate = sum((rate for _, _, rate in auths), Decimal("0"))
+                    if total_rate > 0:
+                        # Open orders hold tax at the DOCUMENT level only. A
+                        # genuine POS order (e.g. OR-BC-19989) keeps every
+                        # PS_DOC_LIN.TAX_AMT_ALLOC = 0 and carries tax solely on
+                        # the header 'O' total row + PS_DOC_TAX. Writing tax onto
+                        # the lines makes Counterpoint render them as RETURN (red)
+                        # lines, so we must NOT touch the lines here - line-level
+                        # tax allocation is CP's job when the ticket is posted.
+                        row = _cur.execute(
+                            "SELECT SUM(CAST(EXT_PRC AS decimal(19,2))), "
+                            "SUM(CAST(QTY_SOLD AS decimal(19,4))) "
+                            "FROM PS_DOC_LIN WHERE DOC_ID = ? AND IS_TXBL = 'Y'", did,
+                        ).fetchone()
+                        taxable_base = Decimal(str(row[0])) if row and row[0] is not None else Decimal("0")
+                        taxable_qty = Decimal(str(row[1])) if row and row[1] is not None else Decimal("0")
+                        # CP rounds tax at the document level per authority.
+                        auth_taxes: list[tuple[str, str, Decimal]] = [
+                            (ac, rul, (taxable_base * rate).quantize(cent, rounding=ROUND_HALF_UP))
+                            for ac, rul, rate in auths
+                        ]
+                        doc_tax = sum((at for _, _, at in auth_taxes), Decimal("0"))
+                        if doc_tax > 0:
+                            # Tax goes on the 'O' (order) total row only; the 'R'
+                            # and 'V' rows are left exactly as CP created them.
+                            _cur.execute(
+                                "UPDATE PS_DOC_HDR_TOT SET TAX_AMT = ?, NORM_TAX_AMT = ?, "
+                                "TOT = SUB_TOT + ?, AMT_DUE = SUB_TOT + ? "
+                                "WHERE DOC_ID = ? AND TOT_TYP = 'O'",
+                                doc_tax, doc_tax, doc_tax, doc_tax, did,
+                            )
+                            # Per-authority PS_DOC_TAX detail (one row per authority).
+                            _cur.execute("DELETE FROM PS_DOC_TAX WHERE DOC_ID = ?", did)
+                            for ac, rul, atax in auth_taxes:
+                                _cur.execute(
+                                    "INSERT INTO PS_DOC_TAX (DOC_ID, AUTH_COD, RUL_COD, TAX_DOC_PART, "
+                                    "LIN_AMT, TXBL_LIN_AMT, TXBL_MISC_CHG_AMT_1, TXBL_MISC_CHG_AMT_2, "
+                                    "TXBL_MISC_CHG_AMT_3, TXBL_MISC_CHG_AMT_4, TXBL_MISC_CHG_AMT_5, "
+                                    "TXBL_GFC_AMT, TXBL_SVC_AMT, TXBL_TAX_AMT, TXBL_QTY, TAX_AMT, "
+                                    "NORM_TAX_AMT, TAX_AMT_EXACT, NORM_TAX_AMT_EXACT, TOT_TXBL_AMT) "
+                                    "VALUES (?, ?, ?, 'O', ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, ?, ?, ?, ?, ?, ?)",
+                                    did, ac, rul or ac, taxable_base, taxable_base, taxable_qty,
+                                    atax, atax, atax, atax, taxable_base,
+                                )
+                            _cn.commit()
+                            log.info("store_order: applied tax %s (rate %s) to doc %s", doc_tax, total_rate, doc_id)
+            except Exception as exc:  # pragma: no cover
+                log.warning("store_order: tax calc failed: %s", exc)
 
         # Always 200 to the storefront: the admin screen is the source of truth
         # and logs the order regardless; surface CP success/failure in the body.
