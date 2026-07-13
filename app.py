@@ -82,13 +82,20 @@ CNTRPORT_AUTH_EXEMPT_PATHS = {
 CNTRPORT_AUTH_EXEMPT_PREFIXES = tuple(
     p.strip() for p in _env(
         "CNTRPORT_AUTH_EXEMPT_PREFIXES",
-        # item images load via header-less <img>; the payment *status* is a
-        # secret-free read the public storefront needs to pick live vs demo
-        # checkout. The admin payment *config* write stays gated.
-        "/api/store/item-image/,/api/store/payments/status",
+        # item images load via header-less <img>; the payment/SMS *status*
+        # endpoints are secret-free reads the public storefront needs (live vs
+        # demo checkout, show/hide text opt-ins). Config writes stay gated.
+        "/api/store/item-image/,/api/store/payments/status,/api/store/sms/status",
     ).split(",")
     if p.strip()
 )
+
+# The Twilio inbound webhook (STOP/ARRET replies) can never carry our API key
+# header - Twilio doesn't send custom headers. It is exempted from the key gate
+# unconditionally and authenticated by its X-Twilio-Signature instead
+# (validated in sms_api.py), so it stays safe even when someone trims the
+# CNTRPORT_AUTH_EXEMPT_* env vars.
+SMS_INBOUND_WEBHOOK_PATH = "/api/store/sms/inbound"
 
 CP_SQL_SERVER      = _env("CP_SQL_SERVER", ".")
 CP_SQL_DATABASE    = _env("CP_SQL_DATABASE")
@@ -161,6 +168,29 @@ STORE_DOC_USR_ID  = _env("STORE_DOC_USR_ID", CP_API_USERNAME or "API")
 STORE_DOC_TKT_TYP = _env("STORE_DOC_TKT_TYP", "T")   # ticket
 STORE_DOC_DOC_TYP = _env("STORE_DOC_DOC_TYP", "O")   # order
 
+# Twilio SMS: order receipts + opted-in marketing texts (see sms_api.py for
+# the CASL/PCI compliance notes). All optional - when the Twilio values are
+# blank the storefront simply hides its text opt-ins and the endpoints report
+# disabled instead of failing.
+TWILIO_ACCOUNT_SID           = _env("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN            = _env("TWILIO_AUTH_TOKEN")
+TWILIO_FROM_NUMBER           = _env("TWILIO_FROM_NUMBER")            # E.164, e.g. +19025550123
+TWILIO_MESSAGING_SERVICE_SID = _env("TWILIO_MESSAGING_SERVICE_SID")  # optional, overrides From
+# CASL proof-of-consent ledger (who opted in, when, with what wording) plus the
+# campaign send log. JSON on the server, git-ignored like payments.json.
+SMS_CONSENT_PATH = _env(
+    "SMS_CONSENT_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "sms_consent.json"),
+)
+# Marketing send window (hours, server-local). Campaigns outside it are refused.
+SMS_QUIET_START = _env_int("SMS_QUIET_START", 9)
+SMS_QUIET_END   = _env_int("SMS_QUIET_END", 21)
+# Optional CASL sender-contact line appended to marketing texts (website/phone).
+SMS_CONTACT_INFO = _env("SMS_CONTACT_INFO")
+# External base URL Twilio calls the inbound webhook on (needed for signature
+# validation behind a proxy/tunnel, e.g. https://shop.example.com).
+SMS_PUBLIC_BASE_URL = _env("SMS_PUBLIC_BASE_URL")
+
 FLASK_HOST  = _env("FLASK_HOST", "0.0.0.0")
 FLASK_PORT  = _env_int("FLASK_PORT", 5000)
 FLASK_DEBUG = _env_bool("FLASK_DEBUG", True)
@@ -193,6 +223,9 @@ def _require_wrapper_api_key():
     if request.path in CNTRPORT_AUTH_EXEMPT_PATHS:
         return None
     if request.path.startswith(CNTRPORT_AUTH_EXEMPT_PREFIXES):
+        return None
+    if request.path == SMS_INBOUND_WEBHOOK_PATH:
+        # Twilio-signed webhook; sms_api.py validates X-Twilio-Signature.
         return None
     supplied = request.headers.get(CNTRPORT_API_KEY_HEADER, "")
     if not supplied or not secrets.compare_digest(supplied, CNTRPORT_API_KEY):
@@ -999,6 +1032,25 @@ store_api.register_store_routes(
         "doc_usr_id": STORE_DOC_USR_ID,
         "doc_tkt_typ": STORE_DOC_TKT_TYP,
         "doc_doc_typ": STORE_DOC_DOC_TYP,
+    },
+)
+
+# SMS receipts + CASL-compliant marketing texts via Twilio (see sms_api.py).
+import sms_api
+
+sms_api.register_sms_routes(
+    app,
+    config={
+        "account_sid": TWILIO_ACCOUNT_SID,
+        "auth_token": TWILIO_AUTH_TOKEN,
+        "from_number": TWILIO_FROM_NUMBER,
+        "messaging_service_sid": TWILIO_MESSAGING_SERVICE_SID,
+        "consent_path": SMS_CONSENT_PATH,
+        "quiet_start": SMS_QUIET_START,
+        "quiet_end": SMS_QUIET_END,
+        "store_name": STORE_NAME,
+        "contact_info": SMS_CONTACT_INFO,
+        "public_base_url": SMS_PUBLIC_BASE_URL,
     },
 )
 

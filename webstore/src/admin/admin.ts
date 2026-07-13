@@ -27,6 +27,15 @@ import {
 import { requireAuth, signOutAdmin, currentUserLabel } from "./auth";
 import { updateItem, updateItemImage, cancelOrder } from "../data/api";
 import {
+  fetchSmsStatus,
+  fetchSmsSubscribers,
+  sendSmsCampaign,
+  sendSmsReceipt,
+  smsUnsubscribe,
+  type SmsStatus,
+  type SmsSubscribersView,
+} from "../data/sms";
+import {
   PAYMENT_PROVIDERS,
   getProvider,
   providerLabel,
@@ -84,6 +93,7 @@ type Section =
   | "categories"
   | "stores"
   | "slides"
+  | "marketing"
   | "payments"
   | "settings";
 const view: {
@@ -102,6 +112,19 @@ const view: {
 // selection (before Save). Loaded once at startup, refreshed after each save.
 let payCfg: PaymentConfigView | null = null;
 const payForm: { provider: string; environment: string } = { provider: "", environment: "" };
+
+// Text marketing: Twilio status + the server-held consent ledger (CASL proof
+// of consent). Loaded when the section opens, refreshed after each action.
+let smsStatus: SmsStatus | null = null;
+let smsData: SmsSubscribersView | null = null;
+
+function loadSms(): void {
+  void Promise.all([fetchSmsStatus(), fetchSmsSubscribers()]).then(([st, data]) => {
+    smsStatus = st;
+    smsData = data;
+    if (view.section === "marketing") render();
+  });
+}
 
 const STATUS_LABEL: Record<OrderStatus, string> = {
   new: "New",
@@ -209,6 +232,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "categories", label: "Categories" },
   { id: "stores", label: "Locations" },
   { id: "slides", label: "Carousel" },
+  { id: "marketing", label: "Text marketing" },
   { id: "payments", label: "Payments" },
   { id: "settings", label: "Settings" },
 ];
@@ -478,6 +502,7 @@ function formOrder(o: Order | undefined): string {
         <p><a href="tel:${esc(o.customer.phone.replace(/[^\d+]/g, ""))}">${esc(o.customer.phone)}</a></p>
         ${cust}
         ${o.customer.notes ? `<p class="muted"><b>Notes:</b> ${esc(o.customer.notes)}</p>` : ""}
+        ${o.customer.phone ? `<button type="button" class="btn btn--sm" data-act="text-receipt">${icon("phone", 14)} Text receipt</button>` : ""}
       </div>
       <div class="panelbox">
         <h4>Payment</h4>
@@ -707,6 +732,79 @@ function paymentsPanel(): string {
   </div>`;
 }
 
+// ── Text marketing (SMS receipts + CASL-compliant campaigns) ─────
+function marketingPanel(): string {
+  const st = smsStatus;
+  const data = smsData;
+  const enabled = !!st?.enabled;
+
+  const badge = !st
+    ? `<span class="pay-badge pay-badge--demo">Checking Twilio…</span>`
+    : enabled
+      ? `<span class="pay-badge pay-badge--live">${icon("phone", 14)} Twilio connected${st.fromNumber ? ` · ${esc(st.fromNumber)}` : ""}</span>`
+      : `<span class="pay-badge pay-badge--warn">Not configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER in the server .env</span>`;
+
+  const subs = data?.subscribers ?? [];
+  const active = data?.counts.active ?? 0;
+  const optedOut = data?.counts.optedOut ?? 0;
+
+  const subRows = subs
+    .map(
+      (s) => `<tr>
+        <td><b>${esc(s.phone)}</b></td>
+        <td>${esc(s.name || "—")}</td>
+        <td class="muted">${s.consentAt ? esc(new Date(s.consentAt).toLocaleDateString()) : "—"}</td>
+        <td class="muted">${esc(s.source || "—")}</td>
+        <td>${s.optedOut ? `<span class="pill">opted out</span>` : `<span class="pill pill--live">subscribed</span>`}</td>
+        <td>${s.optedOut ? "" : `<button type="button" class="btn btn--sm" data-sms-unsub="${esc(s.phone)}">Opt out</button>`}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const campaigns = data?.campaigns ?? [];
+  const campRows = campaigns
+    .map(
+      (c) => `<tr>
+        <td class="muted">${esc(new Date(c.at).toLocaleString())}</td>
+        <td>${esc(c.message)}</td>
+        <td><b>${c.sent}</b>${c.failed ? ` <span class="pill">${c.failed} failed</span>` : ""}</td>
+      </tr>`,
+    )
+    .join("");
+
+  return `<div class="form">
+    <div class="pay-status">${badge}</div>
+    <p class="muted">Customers join this list by ticking the marketing opt-in at checkout (never pre-checked - that's their express consent under CASL). Every campaign automatically carries the store name and a STOP/ARRET unsubscribe notice, only goes to opted-in numbers, and only sends between ${st ? `${String(st.quietStart).padStart(2, "0")}:00 and ${String(st.quietEnd).padStart(2, "0")}:00` : "9:00 and 21:00"}. Receipts are separate - they're transactional and sent per-order.</p>
+
+    <h3>New campaign</h3>
+    <label class="fld"><span>Message <small class="muted">(the store name + unsubscribe footer are added automatically)</small></span>
+      <textarea data-sms-message rows="3" maxlength="640" placeholder="This weekend only: 15% off all local wines in store and online."></textarea>
+    </label>
+    <p class="note"><span data-sms-count>0</span>/640 characters · sending to <b>${active}</b> opted-in subscriber${active === 1 ? "" : "s"}</p>
+    <div class="row" style="margin-bottom:22px">
+      <button type="button" class="btn btn--primary" data-act="send-campaign" ${enabled && active > 0 ? "" : "disabled"}>Send campaign</button>
+    </div>
+
+    <h3>Subscribers <small class="muted">(${active} subscribed · ${optedOut} opted out)</small></h3>
+    ${
+      subs.length
+        ? `<div class="card"><table>
+            <thead><tr><th>Phone</th><th>Name</th><th>Consented</th><th>Source</th><th>Status</th><th></th></tr></thead>
+            <tbody>${subRows}</tbody></table></div>`
+        : `<div class="card"><div class="empty">No subscribers yet - the opt-in lives on the storefront checkout.</div></div>`
+    }
+
+    <h3 style="margin-top:22px">Recent campaigns</h3>
+    ${
+      campaigns.length
+        ? `<div class="card"><table>
+            <thead><tr><th>Sent</th><th>Message</th><th>Delivered</th></tr></thead>
+            <tbody>${campRows}</tbody></table></div>`
+        : `<p class="muted">Nothing sent yet.</p>`
+    }
+  </div>`;
+}
+
 function settings(): string {
   return `<div class="form">
     <h3>Backup &amp; restore</h3>
@@ -750,6 +848,8 @@ function find<T extends { id: string }>(arr: T[], id: string): T | undefined {
 function mainPanel(): string {
   const s = view.section;
   if (s === "settings") return header("Settings", "Backup, restore, and notes") + settings();
+  if (s === "marketing")
+    return header("Text marketing", "Text campaigns to opted-in customers (CASL-compliant)") + marketingPanel();
   if (s === "payments")
     return header("Payments", "Configure a live card processor, or stay in demo mode") + paymentsPanel();
   if (s === "dashboard") return header("Dashboard", "Sales overview & store performance") + dashboardPanel();
@@ -1035,6 +1135,32 @@ async function savePayments(): Promise<void> {
   );
 }
 
+// ── Text marketing: send a campaign to everyone opted in ─────────
+async function sendCampaign(): Promise<void> {
+  const ta = document.querySelector<HTMLTextAreaElement>("[data-sms-message]");
+  const msg = ta?.value.trim() || "";
+  if (!msg) return toast("Write a message first");
+  const n = smsData?.counts.active ?? 0;
+  if (n === 0) return toast("No opted-in subscribers yet");
+  // The server re-checks consent, appends the CASL footer, and enforces the
+  // quiet-hours window - this confirm is just the human safety catch.
+  if (!confirm(`Send this text to ${n} opted-in subscriber${n === 1 ? "" : "s"}?`)) return;
+  const res = await sendSmsCampaign(msg);
+  if (res.ok) {
+    toast(`Sent to ${res.sent} subscriber${res.sent === 1 ? "" : "s"}`);
+    if (ta) ta.value = "";
+  } else if (res.quietHours) {
+    toast(res.message || "Outside the allowed send window");
+  } else if (res.disabled) {
+    toast("Twilio isn't configured on the server");
+  } else if (typeof res.sent === "number") {
+    toast(`Sent ${res.sent}, failed ${res.failed}`);
+  } else {
+    toast("Send failed: " + (res.message || "unknown error"));
+  }
+  loadSms();
+}
+
 // ── events ───────────────────────────────────────────────────────
 document.addEventListener("click", (e) => {
   const el = e.target as HTMLElement;
@@ -1046,6 +1172,7 @@ document.addEventListener("click", (e) => {
     view.statusFilter = "all";
     payForm.provider = "";
     payForm.environment = "";
+    if (view.section === "marketing") loadSms();
     return render();
   }
   const openOrder = el.closest<HTMLElement>("[data-open-order]")?.dataset.openOrder;
@@ -1104,6 +1231,31 @@ document.addEventListener("click", (e) => {
     void savePayments();
     return;
   }
+  if (act === "send-campaign") {
+    void sendCampaign();
+    return;
+  }
+  const smsUnsub = el.closest<HTMLElement>("[data-sms-unsub]")?.dataset.smsUnsub;
+  if (smsUnsub) {
+    if (confirm(`Opt ${smsUnsub} out of marketing texts?`)) {
+      void smsUnsubscribe(smsUnsub).then(() => {
+        toast("Opted out");
+        loadSms();
+      });
+    }
+    return;
+  }
+  if (act === "text-receipt") {
+    const o = view.editing ? find(DB.orders, view.editing) : undefined;
+    if (!o) return;
+    if (!o.customer.phone) return toast("This order has no phone number");
+    void sendSmsReceipt(o).then((r) => {
+      if (r.ok) toast(`Receipt texted to ${o.customer.phone}`);
+      else if (r.disabled) toast("Twilio isn't configured on the server");
+      else toast("Text failed: " + (r.message || "unknown error"));
+    });
+    return;
+  }
   if (act === "export") return download("enm-content.json", exportData());
   if (act === "logout") {
     if (confirm("Sign out of the admin?")) signOutAdmin();
@@ -1127,6 +1279,11 @@ document.addEventListener("submit", (e) => {
 // Live search- refresh only the table so the search box keeps focus.
 document.addEventListener("input", (e) => {
   const el = e.target as HTMLElement;
+  if (el.matches("[data-sms-message]")) {
+    const count = document.querySelector("[data-sms-count]");
+    if (count) count.textContent = String((el as HTMLTextAreaElement).value.length);
+    return;
+  }
   if (!el.matches("[data-search]")) return;
   view.query = (el as HTMLInputElement).value;
   const list = document.getElementById("admin-list");

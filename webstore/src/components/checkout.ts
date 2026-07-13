@@ -2,6 +2,7 @@ import { state, setCheckoutOpen, clearCart } from "../state/store";
 import { getProducts, getVisibleStores, getConfig } from "../data/cms";
 import { postOrder, confirmPromotions } from "../data/api";
 import { fetchPaymentStatus, providerLabel, type PaymentStatus } from "../data/payments";
+import { fetchSmsStatus, sendSmsReceipt, smsSubscribe, type SmsStatus } from "../data/sms";
 import { t } from "../i18n";
 import { money } from "../lib/format";
 import { esc, $ } from "../lib/dom";
@@ -26,6 +27,11 @@ let fulfillment: Fulfillment = "pickup";
 // Live vs demo checkout, decided by the admin-configured processor. Defaults to
 // demo and is refreshed (secret-free) each time checkout opens.
 let payStatus: PaymentStatus = { mode: "demo", provider: "", environment: "", publicConfig: {} };
+
+// Whether the server has Twilio configured - decides if the text opt-ins show.
+let smsStatus: SmsStatus = { enabled: false, fromNumber: "", quietStart: 9, quietEnd: 21 };
+// Outcome of the receipt text for the confirmation screen ("" = not requested).
+let receiptTextState: "" | "pending" | "sent" | "failed" = "";
 
 // Prices confirmed against active planned promotions at checkout time, plus each
 // item's required deposit (bottle deposit). Empty until the confirm call resolves.
@@ -63,12 +69,18 @@ export function openCheckout(): void {
   placed = null;
   fulfillment = "pickup";
   confirmed = {};
+  receiptTextState = "";
   renderCheckout();
   setCheckoutOpen(true);
   // Refresh the live/demo decision from the server (secret-free). Re-render the
   // form once known so the payment section reflects the configured processor.
   void fetchPaymentStatus().then((s) => {
     payStatus = s;
+    if (!placed) renderCheckout();
+  });
+  // Same for SMS: the text opt-ins only render when Twilio is configured.
+  void fetchSmsStatus().then((s) => {
+    smsStatus = s;
     if (!placed) renderCheckout();
   });
   // Confirm planned promotions against the live catalogue with the real cart
@@ -217,6 +229,27 @@ function formHTML(): string {
           ${fld(t("checkout.cvc"), "cvc", "text", 'inputmode="numeric" maxlength="4"', "123")}
         </div>
       </section>
+
+      ${
+        smsStatus.enabled
+          ? /* html */ `
+      <section class="co__sec">
+        <h3>${icon("phone", 18)} ${esc(t("checkout.texts"))}</h3>
+        <label class="co-check">
+          <input type="checkbox" data-co-field="smsReceipt" />
+          <span>${esc(t("checkout.smsReceipt"))}</span>
+        </label>
+        <!-- CASL: express consent must be an unchecked, optional opt-in with
+             the sender named; the exact wording is stored server-side as the
+             proof-of-consent record. -->
+        <label class="co-check">
+          <input type="checkbox" data-co-field="smsMarketing" />
+          <span>${esc(t("checkout.smsMarketing", { store: getConfig().name }))}</span>
+        </label>
+        <p class="co__fine">${esc(t("checkout.smsFine"))}</p>
+      </section>`
+          : ""
+      }
     </div>
 
     <aside class="co__summary">
@@ -266,6 +299,13 @@ function confirmationHTML(o: Order): string {
 
     <p class="co-done__info">${esc(info)}</p>
     <p class="co-done__emailed">${icon("mail", 14)} ${esc(t("checkout.emailed", { email: o.customer.email }))}</p>
+    ${
+      receiptTextState === "sent"
+        ? `<p class="co-done__emailed">${icon("phone", 14)} ${esc(t("checkout.texted", { phone: o.customer.phone }))}</p>`
+        : receiptTextState === "failed"
+          ? `<p class="co-done__emailed">${icon("phone", 14)} ${esc(t("checkout.textFailed"))}</p>`
+          : ""
+    }
 
     <div class="co-done__summary">
       <div class="co-lines">${summaryRows(o.items)}</div>
@@ -395,6 +435,28 @@ function placeOrder(form: HTMLFormElement): void {
   }).then((res) => {
     if (res.doc_id) updateOrder(order.id, { cpDocId: res.doc_id });
   });
+
+  // Text messaging (only offered when the server has Twilio configured).
+  const wantsReceipt = (field(form, "smsReceipt") as HTMLInputElement | null)?.checked ?? false;
+  const wantsMarketing = (field(form, "smsMarketing") as HTMLInputElement | null)?.checked ?? false;
+  if (smsStatus.enabled && wantsReceipt) {
+    receiptTextState = "pending";
+    void sendSmsReceipt(order).then((r) => {
+      receiptTextState = r.ok ? "sent" : "failed";
+      // Update the confirmation screen in place once the outcome is known.
+      if (placed === order) renderCheckout();
+    });
+  }
+  if (smsStatus.enabled && wantsMarketing) {
+    // CASL: store the exact wording the shopper agreed to with the consent.
+    void smsSubscribe({
+      phone: order.customer.phone,
+      name: order.customer.name,
+      consentText:
+        t("checkout.smsMarketing", { store: getConfig().name }) + " " + t("checkout.smsFine"),
+      source: "checkout",
+    });
+  }
 
   clearCart();
   placed = order;

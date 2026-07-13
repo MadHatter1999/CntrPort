@@ -110,6 +110,13 @@ const en: Dict = {
   "checkout.pickupInfo": "Ready for pickup at {store} - we'll be in touch when it's packed.",
   "checkout.shipInfo": "We'll deliver your order to {address}.",
   "checkout.emailed": "A receipt is on its way to {email}.",
+  "checkout.texts": "Text messages",
+  "checkout.smsReceipt": "Text my receipt to my phone",
+  "checkout.smsMarketing": "Yes - I'd like to receive occasional offers and promotions from {store} by text message.",
+  "checkout.smsFine":
+    "Both are optional and not a condition of purchase. Msg & data rates may apply. Reply STOP anytime to unsubscribe, HELP for help. We record your consent as required by Canadian law (CASL).",
+  "checkout.texted": "Your receipt was texted to {phone}.",
+  "checkout.textFailed": "We couldn't text your receipt - the copy sent to your email still applies.",
   "checkout.continue": "Continue shopping",
   "a11y.closeCheckout": "Close checkout",
 
