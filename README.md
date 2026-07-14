@@ -71,6 +71,14 @@ If permission is denied or revoked, the user or organization must stop using, co
 
 Continued unauthorized use after written notice may result in legal action, including takedown requests, injunctive relief, damages, and recovery of applicable legal costs where permitted by law.
 
+## Donation link
+
+If you feel you wish to support please donate here:
+
+[Donate on to Tony](https://ko-fi.com/madhatterdev)
+
+Donations are optional for small sites and help support development, testing, hosting, and ongoing maintenance.
+
 ### No Warranty
 
 This software is provided "as is", without warranty of any kind, express or implied. [Anthony Healy](https://anthony-healy.web.app/contact) is not liable for any damages, losses, business interruption, data loss, or other issues arising from the use of this software.
