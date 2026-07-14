@@ -10,6 +10,8 @@
 payments.json
 # SMS marketing consent ledger (customer phone numbers - personal information).
 sms_consent.json
+# Admin storefront content overlay (slides, hidden locations, tile art).
+store_content.json
 
 # Generated dark-surface variant of the brand icon (created by predev/prebuild
 # from favicon.svg via scripts/gen-dark-icon.mjs).

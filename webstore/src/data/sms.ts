@@ -2,22 +2,26 @@ import { apiUrl, authHeaders } from "./api";
 import type { Order } from "./orders";
 
 /**
- * SMS client for the wrapper's /api/store/sms/* endpoints (Twilio behind the
- * server - credentials never reach this bundle).
+ * Messaging client for the wrapper's /api/store/sms/* and /api/store/email/*
+ * endpoints (Twilio SMS + Twilio SendGrid email behind the server -
+ * credentials never reach this bundle).
  *
  * Two message kinds, deliberately kept apart:
  *  - Receipts: transactional, sent only when the shopper ticks "text me my
- *    receipt" at checkout (or an admin re-sends one). Order facts only -
- *    never any card data (PCI).
- *  - Marketing: CASL territory. The storefront records express consent
- *    (unchecked-by-default opt-in, exact wording stored server-side) and the
- *    admin can only campaign to that opted-in list; the server appends the
- *    store identification + STOP/ARRET footer to every send.
+ *    receipt" at checkout / automatically by email (or an admin re-sends).
+ *    Order facts only - never any card data (PCI).
+ *  - Marketing: CASL territory. The storefront records express consent PER
+ *    CHANNEL (unchecked-by-default opt-ins, exact wording stored server-side)
+ *    and the admin can only campaign to those opted-in lists; the server
+ *    appends the store identification + unsubscribe mechanism to every send
+ *    (STOP/ARRET for texts, a tokenized link for email).
  */
 
 export interface SmsStatus {
   enabled: boolean;
   fromNumber: string;
+  emailEnabled: boolean;
+  emailFrom: string;
   quietStart: number;
   quietEnd: number;
 }
@@ -39,10 +43,21 @@ export interface SmsSubscriber {
   optOutAt: string | null;
 }
 
+export interface EmailSubscriber {
+  email: string;
+  name: string;
+  consentAt: string;
+  consentText: string;
+  source: string;
+  optedOut: boolean;
+  optOutAt: string | null;
+}
+
 export interface SmsCampaign {
   at: string;
+  channel: "sms" | "email";
+  subject?: string;
   message: string;
-  body: string;
   sent: number;
   failed: number;
 }
@@ -50,8 +65,10 @@ export interface SmsCampaign {
 export interface SmsSubscribersView {
   ok: boolean;
   enabled: boolean;
+  emailEnabled: boolean;
   subscribers: SmsSubscriber[];
-  counts: { active: number; optedOut: number };
+  emailSubscribers: EmailSubscriber[];
+  counts: { active: number; optedOut: number; emailActive: number; emailOptedOut: number };
   campaigns: SmsCampaign[];
 }
 
@@ -65,7 +82,14 @@ export interface SmsCampaignResult {
   message?: string;
 }
 
-const DISABLED_STATUS: SmsStatus = { enabled: false, fromNumber: "", quietStart: 9, quietEnd: 21 };
+const DISABLED_STATUS: SmsStatus = {
+  enabled: false,
+  fromNumber: "",
+  emailEnabled: false,
+  emailFrom: "",
+  quietStart: 9,
+  quietEnd: 21,
+};
 
 /** Secret-free status the storefront uses to show/hide the text opt-ins. */
 export async function fetchSmsStatus(): Promise<SmsStatus> {
@@ -130,13 +154,15 @@ export function smsUnsubscribe(phone: string): Promise<SmsSendResult> {
   );
 }
 
-/** Admin: consent ledger + campaign history. */
+/** Admin: consent ledgers (both channels) + full campaign history. */
 export async function fetchSmsSubscribers(): Promise<SmsSubscribersView> {
   const fallback: SmsSubscribersView = {
     ok: false,
     enabled: false,
+    emailEnabled: false,
     subscribers: [],
-    counts: { active: 0, optedOut: 0 },
+    emailSubscribers: [],
+    counts: { active: 0, optedOut: 0, emailActive: 0, emailOptedOut: 0 },
     campaigns: [],
   };
   try {
@@ -152,4 +178,54 @@ export async function fetchSmsSubscribers(): Promise<SmsSubscribersView> {
  *  appends the store name + STOP footer and enforces the quiet-hours window. */
 export function sendSmsCampaign(message: string): Promise<SmsCampaignResult> {
   return postJSON("/api/store/sms/campaign", { message }, { ok: false, message: "network error" });
+}
+
+// ── email channel (Twilio SendGrid behind the wrapper) ───────────────
+
+/** Email an order receipt (transactional; the server composes it). */
+export function sendEmailReceipt(order: Order): Promise<SmsSendResult> {
+  return postJSON(
+    "/api/store/email/receipt",
+    {
+      email: order.customer.email,
+      ref: order.id,
+      items: order.items.map((it) => ({ name: it.name, qty: it.qty })),
+      total: order.total,
+      fulfillment: order.fulfillment,
+      store: order.storeName || "",
+    },
+    { ok: false, message: "network error" },
+  );
+}
+
+/** Record express email-marketing consent (CASL) with the exact wording shown. */
+export function emailSubscribe(payload: {
+  email: string;
+  name?: string;
+  consentText: string;
+  source: string;
+}): Promise<SmsSendResult> {
+  return postJSON("/api/store/email/marketing/subscribe", payload, {
+    ok: false,
+    message: "network error",
+  });
+}
+
+/** Opt an address out (admin action; recipients use the link in each email). */
+export function emailUnsubscribe(email: string): Promise<SmsSendResult> {
+  return postJSON(
+    "/api/store/email/marketing/unsubscribe",
+    { email, source: "admin" },
+    { ok: false, message: "network error" },
+  );
+}
+
+/** Admin: email every opted-in address. The server adds the CASL footer
+ *  (store, mailing address, contact) and a per-address unsubscribe link. */
+export function sendEmailCampaign(subject: string, message: string): Promise<SmsCampaignResult> {
+  return postJSON(
+    "/api/store/email/campaign",
+    { subject, message },
+    { ok: false, message: "network error" },
+  );
 }

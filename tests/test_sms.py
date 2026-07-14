@@ -105,6 +105,51 @@ def test_quiet_hours_window():
     assert not sms_api.within_send_window(mk(3), 9, 21)
 
 
+# ── email helpers (SendGrid channel) ─────────────────────────────────────────
+
+def test_normalize_email():
+    assert sms_api.normalize_email(" Jane@Example.COM ") == "jane@example.com"
+    assert sms_api.normalize_email("not-an-email") is None
+    assert sms_api.normalize_email("") is None
+    assert sms_api.normalize_email(None) is None
+    assert sms_api.normalize_email("a@b") is None
+
+
+def test_email_unsub_token_is_per_address():
+    a = sms_api.email_unsub_token("secret", "a@example.com")
+    b = sms_api.email_unsub_token("secret", "b@example.com")
+    assert a != b
+    assert a == sms_api.email_unsub_token("secret", "a@example.com")
+    assert a != sms_api.email_unsub_token("other-secret", "a@example.com")
+
+
+def test_email_marketing_bodies_casl_footer():
+    text, html_body = sms_api.email_marketing_bodies(
+        "Bishops Cellar", "15% off this weekend.",
+        contact="bishopscellar.com",
+        address="123 Water St, Halifax NS",
+        unsub_url="https://shop.example.com/api/store/email/unsubscribe?e=a%40b.com&t=tok",
+    )
+    for body in (text, html_body):
+        assert "Bishops Cellar" in body
+        assert "123 Water St" in body
+        assert "bishopscellar.com" in body
+    assert "Unsubscribe: https://" in text
+    assert 'href="https://shop.example.com' in html_body
+
+
+def test_email_receipt_bodies():
+    subject, text = sms_api.email_receipt_bodies(
+        "Bishops Cellar", "WEB-1042",
+        [{"name": "Chardonnay", "qty": 2}], 42.5,
+        fulfillment="pickup", location="Waterfront",
+    )
+    assert subject == "Bishops Cellar receipt WEB-1042"
+    assert "2x Chardonnay" in text
+    assert "Total $42.50" in text
+    assert "Waterfront" in text
+
+
 # ── Twilio signature validation ──────────────────────────────────────────────
 
 def test_twilio_signature_roundtrip():

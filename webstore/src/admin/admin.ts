@@ -32,6 +32,8 @@ import {
   sendSmsCampaign,
   sendSmsReceipt,
   smsUnsubscribe,
+  sendEmailCampaign,
+  emailUnsubscribe,
   type SmsStatus,
   type SmsSubscribersView,
 } from "../data/sms";
@@ -113,10 +115,12 @@ const view: {
 let payCfg: PaymentConfigView | null = null;
 const payForm: { provider: string; environment: string } = { provider: "", environment: "" };
 
-// Text marketing: Twilio status + the server-held consent ledger (CASL proof
-// of consent). Loaded when the section opens, refreshed after each action.
+// Marketing: Twilio/SendGrid status + the server-held consent ledger (CASL
+// proof of consent). Loaded when the section opens, refreshed after actions.
 let smsStatus: SmsStatus | null = null;
 let smsData: SmsSubscribersView | null = null;
+// Which channel the campaign composer is aimed at (kept across re-renders).
+let campaignChannel: "sms" | "email" = "sms";
 
 function loadSms(): void {
   void Promise.all([fetchSmsStatus(), fetchSmsSubscribers()]).then(([st, data]) => {
@@ -232,7 +236,7 @@ const SECTIONS: { id: Section; label: string }[] = [
   { id: "categories", label: "Categories" },
   { id: "stores", label: "Locations" },
   { id: "slides", label: "Carousel" },
-  { id: "marketing", label: "Text marketing" },
+  { id: "marketing", label: "Marketing" },
   { id: "payments", label: "Payments" },
   { id: "settings", label: "Settings" },
 ];
@@ -732,21 +736,33 @@ function paymentsPanel(): string {
   </div>`;
 }
 
-// ── Text marketing (SMS receipts + CASL-compliant campaigns) ─────
+// ── Marketing (SMS + email receipts and CASL-compliant campaigns) ─
 function marketingPanel(): string {
   const st = smsStatus;
   const data = smsData;
-  const enabled = !!st?.enabled;
+  const smsEnabled = !!st?.enabled;
+  const emailEnabled = !!st?.emailEnabled;
 
-  const badge = !st
+  const smsBadge = !st
     ? `<span class="pay-badge pay-badge--demo">Checking Twilio…</span>`
-    : enabled
-      ? `<span class="pay-badge pay-badge--live">${icon("phone", 14)} Twilio connected${st.fromNumber ? ` · ${esc(st.fromNumber)}` : ""}</span>`
-      : `<span class="pay-badge pay-badge--warn">Not configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER in the server .env</span>`;
+    : smsEnabled
+      ? `<span class="pay-badge pay-badge--live">${icon("phone", 14)} SMS connected${st.fromNumber ? ` · ${esc(st.fromNumber)}` : ""}</span>`
+      : `<span class="pay-badge pay-badge--warn">SMS not configured — set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM_NUMBER</span>`;
+  const emailBadge = !st
+    ? ""
+    : emailEnabled
+      ? `<span class="pay-badge pay-badge--live">${icon("mail", 14)} Email connected${st.emailFrom ? ` · ${esc(st.emailFrom)}` : ""}</span>`
+      : `<span class="pay-badge pay-badge--warn">Email not configured — set TWILIO_SENDGRID_API_KEY and EMAIL_FROM</span>`;
 
   const subs = data?.subscribers ?? [];
+  const esubs = data?.emailSubscribers ?? [];
   const active = data?.counts.active ?? 0;
   const optedOut = data?.counts.optedOut ?? 0;
+  const emailActive = data?.counts.emailActive ?? 0;
+  const emailOptedOut = data?.counts.emailOptedOut ?? 0;
+
+  const chanRecipients = campaignChannel === "email" ? emailActive : active;
+  const chanReady = campaignChannel === "email" ? emailEnabled : smsEnabled;
 
   const subRows = subs
     .map(
@@ -761,44 +777,80 @@ function marketingPanel(): string {
     )
     .join("");
 
+  const emailRows = esubs
+    .map(
+      (s) => `<tr>
+        <td><b>${esc(s.email)}</b></td>
+        <td>${esc(s.name || "—")}</td>
+        <td class="muted">${s.consentAt ? esc(new Date(s.consentAt).toLocaleDateString()) : "—"}</td>
+        <td class="muted">${esc(s.source || "—")}</td>
+        <td>${s.optedOut ? `<span class="pill">opted out</span>` : `<span class="pill pill--live">subscribed</span>`}</td>
+        <td>${s.optedOut ? "" : `<button type="button" class="btn btn--sm" data-email-unsub="${esc(s.email)}">Opt out</button>`}</td>
+      </tr>`,
+    )
+    .join("");
+
+  // Full history, newest first - every past send stays reviewable (what went
+  // out, on which channel, when, and how many it reached).
   const campaigns = data?.campaigns ?? [];
   const campRows = campaigns
     .map(
       (c) => `<tr>
         <td class="muted">${esc(new Date(c.at).toLocaleString())}</td>
-        <td>${esc(c.message)}</td>
+        <td>${c.channel === "email" ? `<span class="pill">${icon("mail", 12)} email</span>` : `<span class="pill">${icon("phone", 12)} SMS</span>`}</td>
+        <td>${c.subject ? `<b>${esc(c.subject)}</b><br>` : ""}${esc(c.message)}</td>
         <td><b>${c.sent}</b>${c.failed ? ` <span class="pill">${c.failed} failed</span>` : ""}</td>
       </tr>`,
     )
     .join("");
 
   return `<div class="form">
-    <div class="pay-status">${badge}</div>
-    <p class="muted">Customers join this list by ticking the marketing opt-in at checkout (never pre-checked - that's their express consent under CASL). Every campaign automatically carries the store name and a STOP/ARRET unsubscribe notice, only goes to opted-in numbers, and only sends between ${st ? `${String(st.quietStart).padStart(2, "0")}:00 and ${String(st.quietEnd).padStart(2, "0")}:00` : "9:00 and 21:00"}. Receipts are separate - they're transactional and sent per-order.</p>
+    <div class="pay-status">${smsBadge} ${emailBadge}</div>
+    <p class="muted">Customers join these lists by ticking the marketing opt-ins at checkout (never pre-checked - that's their express consent under CASL, recorded per channel). Every campaign identifies the store and carries an unsubscribe mechanism - texts say STOP/ARRET, emails get a one-click unsubscribe link - and only goes to its opted-in list. Texts only send between ${st ? `${String(st.quietStart).padStart(2, "0")}:00 and ${String(st.quietEnd).padStart(2, "0")}:00` : "9:00 and 21:00"}. Receipts are separate - they're transactional and sent per-order.</p>
 
     <h3>New campaign</h3>
-    <label class="fld"><span>Message <small class="muted">(the store name + unsubscribe footer are added automatically)</small></span>
-      <textarea data-sms-message rows="3" maxlength="640" placeholder="This weekend only: 15% off all local wines in store and online."></textarea>
+    <div class="grid2">
+      <label class="fld"><span>Channel</span>
+        <select data-sms-channel>
+          <option value="sms" ${campaignChannel === "sms" ? "selected" : ""}>Text message (SMS)</option>
+          <option value="email" ${campaignChannel === "email" ? "selected" : ""}>Email</option>
+        </select>
+      </label>
+    </div>
+    <label class="fld" data-email-subject-row ${campaignChannel === "email" ? "" : "hidden"}><span>Subject</span>
+      <input data-sms-subject type="text" maxlength="120" placeholder="This weekend at the store…" />
     </label>
-    <p class="note"><span data-sms-count>0</span>/640 characters · sending to <b>${active}</b> opted-in subscriber${active === 1 ? "" : "s"}</p>
+    <label class="fld"><span>Message <small class="muted">(the store name + unsubscribe footer are added automatically)</small></span>
+      <textarea data-sms-message rows="3" maxlength="5000" placeholder="This weekend only: 15% off all local wines in store and online."></textarea>
+    </label>
+    <p class="note"><span data-sms-count>0</span> characters · sending to <b data-sms-recipients>${chanRecipients}</b> opted-in subscriber${chanRecipients === 1 ? "" : "s"}</p>
     <div class="row" style="margin-bottom:22px">
-      <button type="button" class="btn btn--primary" data-act="send-campaign" ${enabled && active > 0 ? "" : "disabled"}>Send campaign</button>
+      <button type="button" class="btn btn--primary" data-act="send-campaign" ${chanReady && chanRecipients > 0 ? "" : "disabled"}>Send campaign</button>
     </div>
 
-    <h3>Subscribers <small class="muted">(${active} subscribed · ${optedOut} opted out)</small></h3>
+    <h3>Text subscribers <small class="muted">(${active} subscribed · ${optedOut} opted out)</small></h3>
     ${
       subs.length
         ? `<div class="card"><table>
             <thead><tr><th>Phone</th><th>Name</th><th>Consented</th><th>Source</th><th>Status</th><th></th></tr></thead>
             <tbody>${subRows}</tbody></table></div>`
-        : `<div class="card"><div class="empty">No subscribers yet - the opt-in lives on the storefront checkout.</div></div>`
+        : `<div class="card"><div class="empty">No text subscribers yet - the opt-in lives on the storefront checkout.</div></div>`
     }
 
-    <h3 style="margin-top:22px">Recent campaigns</h3>
+    <h3 style="margin-top:22px">Email subscribers <small class="muted">(${emailActive} subscribed · ${emailOptedOut} opted out)</small></h3>
+    ${
+      esubs.length
+        ? `<div class="card"><table>
+            <thead><tr><th>Email</th><th>Name</th><th>Consented</th><th>Source</th><th>Status</th><th></th></tr></thead>
+            <tbody>${emailRows}</tbody></table></div>`
+        : `<div class="card"><div class="empty">No email subscribers yet - the opt-in lives on the storefront checkout.</div></div>`
+    }
+
+    <h3 style="margin-top:22px">Campaign history</h3>
     ${
       campaigns.length
         ? `<div class="card"><table>
-            <thead><tr><th>Sent</th><th>Message</th><th>Delivered</th></tr></thead>
+            <thead><tr><th>Sent</th><th>Channel</th><th>Message</th><th>Delivered</th></tr></thead>
             <tbody>${campRows}</tbody></table></div>`
         : `<p class="muted">Nothing sent yet.</p>`
     }
@@ -808,14 +860,14 @@ function marketingPanel(): string {
 function settings(): string {
   return `<div class="form">
     <h3>Backup &amp; restore</h3>
-    <p class="muted">All edits are stored in this browser. Export a JSON backup to keep it safe or hand it back to migrate to a shared database later.</p>
+    <p class="muted">Content edits are stored on the store server and apply to every visitor. Export a JSON backup to keep it safe or to move it to another install.</p>
     <div class="row" style="margin:14px 0 22px">
       <button class="btn btn--primary" data-act="export">Export JSON</button>
       <label class="btn">Import JSON<input type="file" accept="application/json" data-act="import" hidden /></label>
       <button class="btn btn--danger" data-act="reset">Reset to defaults</button>
     </div>
     <h3>How it works</h3>
-    <p class="muted" style="font-size:.9rem">This tool edits the catalog the storefront reads. Changes appear on the storefront after a reload. It is unlinked from the public site -BE bookmark this page. (Production note: to make edits visible to <em>all</em> visitors, point the CMS read/write helpers at Cloud Firestore.)</p>
+    <p class="muted" style="font-size:.9rem">This tool edits the catalog the storefront reads. Saves are pushed to the store server (and cached in this browser), so hidden locations, carousel slides and other edits apply to <em>all</em> visitors - each storefront picks them up on its next load. Reset clears the server copy for everyone and falls back to the live Counterpoint catalog.</p>
   </div>`;
 }
 
@@ -849,7 +901,7 @@ function mainPanel(): string {
   const s = view.section;
   if (s === "settings") return header("Settings", "Backup, restore, and notes") + settings();
   if (s === "marketing")
-    return header("Text marketing", "Text campaigns to opted-in customers (CASL-compliant)") + marketingPanel();
+    return header("Marketing", "Text & email campaigns to opted-in customers (CASL-compliant)") + marketingPanel();
   if (s === "payments")
     return header("Payments", "Configure a live card processor, or stay in demo mode") + paymentsPanel();
   if (s === "dashboard") return header("Dashboard", "Sales overview & store performance") + dashboardPanel();
@@ -920,11 +972,19 @@ function render(): void {
 }
 
 // ── persistence per section ──────────────────────────────────────
+// Content saves push to the store server so they reach every visitor; if that
+// push fails the edit only lives in this browser, which the admin must know.
+function surfaceSync(p: Promise<boolean>): void {
+  void p.then((ok) => {
+    if (!ok) toast("Saved in this browser only — server sync failed, other visitors won't see it");
+  });
+}
+
 function persist(section: Section): void {
-  if (section === "products") saveProducts(DB.products);
-  if (section === "categories") saveCategories(DB.categories);
-  if (section === "stores") saveStores(DB.stores);
-  if (section === "slides") saveSlides(DB.slides);
+  if (section === "products") surfaceSync(saveProducts(DB.products));
+  if (section === "categories") surfaceSync(saveCategories(DB.categories));
+  if (section === "stores") surfaceSync(saveStores(DB.stores));
+  if (section === "slides") surfaceSync(saveSlides(DB.slides));
   if (section === "orders") saveOrders(DB.orders);
 }
 
@@ -1135,24 +1195,31 @@ async function savePayments(): Promise<void> {
   );
 }
 
-// ── Text marketing: send a campaign to everyone opted in ─────────
+// ── Marketing: send a campaign to everyone opted in (SMS or email) ─
 async function sendCampaign(): Promise<void> {
   const ta = document.querySelector<HTMLTextAreaElement>("[data-sms-message]");
   const msg = ta?.value.trim() || "";
   if (!msg) return toast("Write a message first");
-  const n = smsData?.counts.active ?? 0;
-  if (n === 0) return toast("No opted-in subscribers yet");
-  // The server re-checks consent, appends the CASL footer, and enforces the
-  // quiet-hours window - this confirm is just the human safety catch.
-  if (!confirm(`Send this text to ${n} opted-in subscriber${n === 1 ? "" : "s"}?`)) return;
-  const res = await sendSmsCampaign(msg);
+
+  const isEmail = campaignChannel === "email";
+  const subject = document.querySelector<HTMLInputElement>("[data-sms-subject]")?.value.trim() || "";
+  if (isEmail && !subject) return toast("Add a subject line");
+  const n = (isEmail ? smsData?.counts.emailActive : smsData?.counts.active) ?? 0;
+  if (n === 0) return toast(`No opted-in ${isEmail ? "email" : "text"} subscribers yet`);
+
+  // The server re-checks consent, appends the CASL footer/unsubscribe link,
+  // and (for SMS) enforces quiet hours - this confirm is the human catch.
+  const noun = isEmail ? "email" : "text";
+  if (!confirm(`Send this ${noun} to ${n} opted-in subscriber${n === 1 ? "" : "s"}?`)) return;
+
+  const res = isEmail ? await sendEmailCampaign(subject, msg) : await sendSmsCampaign(msg);
   if (res.ok) {
     toast(`Sent to ${res.sent} subscriber${res.sent === 1 ? "" : "s"}`);
     if (ta) ta.value = "";
   } else if (res.quietHours) {
     toast(res.message || "Outside the allowed send window");
   } else if (res.disabled) {
-    toast("Twilio isn't configured on the server");
+    toast(isEmail ? "SendGrid isn't configured on the server" : "Twilio isn't configured on the server");
   } else if (typeof res.sent === "number") {
     toast(`Sent ${res.sent}, failed ${res.failed}`);
   } else {
@@ -1192,7 +1259,7 @@ document.addEventListener("click", (e) => {
     const st = find(DB.stores, toggleVis);
     if (st) {
       st.hidden = !st.hidden;
-      saveStores(DB.stores);
+      surfaceSync(saveStores(DB.stores));
       render();
       toast(st.hidden ? `${st.name} hidden from storefront` : `${st.name} now visible on storefront`);
     }
@@ -1245,6 +1312,16 @@ document.addEventListener("click", (e) => {
     }
     return;
   }
+  const emailUnsub = el.closest<HTMLElement>("[data-email-unsub]")?.dataset.emailUnsub;
+  if (emailUnsub) {
+    if (confirm(`Opt ${emailUnsub} out of marketing emails?`)) {
+      void emailUnsubscribe(emailUnsub).then(() => {
+        toast("Opted out");
+        loadSms();
+      });
+    }
+    return;
+  }
   if (act === "text-receipt") {
     const o = view.editing ? find(DB.orders, view.editing) : undefined;
     if (!o) return;
@@ -1262,9 +1339,13 @@ document.addEventListener("click", (e) => {
     return;
   }
   if (act === "reset") {
-    if (confirm("Discard all edits and restore the original catalog?")) {
-      resetAll();
-      location.reload();
+    if (confirm("Discard all edits (for every visitor) and restore the original catalog?")) {
+      // Clear the server overlay first - reloading sooner would just pull the
+      // old overlay straight back into this browser.
+      void resetAll().then((ok) => {
+        if (!ok) toast("Couldn't reach the server — reset not applied");
+        else location.reload();
+      });
     }
   }
 });
@@ -1303,6 +1384,21 @@ document.addEventListener("change", async (e) => {
     payForm.environment = el.value;
     return;
   }
+  // Campaign channel switch: swap the subject row / recipient count / button
+  // state in place - a re-render would wipe the message being typed.
+  if (el.matches("[data-sms-channel]")) {
+    campaignChannel = el.value === "email" ? "email" : "sms";
+    const isEmail = campaignChannel === "email";
+    const subjRow = document.querySelector<HTMLElement>("[data-email-subject-row]");
+    if (subjRow) subjRow.hidden = !isEmail;
+    const n = (isEmail ? smsData?.counts.emailActive : smsData?.counts.active) ?? 0;
+    const ready = isEmail ? !!smsStatus?.emailEnabled : !!smsStatus?.enabled;
+    const count = document.querySelector<HTMLElement>("[data-sms-recipients]");
+    if (count) count.textContent = String(n);
+    const btn = document.querySelector<HTMLButtonElement>('[data-act="send-campaign"]');
+    if (btn) btn.disabled = !ready || n === 0;
+    return;
+  }
   if (el.matches("[data-status-filter]")) {
     view.statusFilter = el.value as OrderStatus | "all";
     const list = document.getElementById("admin-list");
@@ -1320,8 +1416,11 @@ document.addEventListener("change", async (e) => {
   if (el.matches('[data-act="import"]') && el.files?.[0]) {
     const text = await el.files[0].text();
     try {
-      importData(text);
-      location.reload();
+      // The import only counts once the server has it (a reload re-pulls the
+      // server overlay, which would silently undo a local-only import).
+      const ok = await importData(text);
+      if (ok) location.reload();
+      else toast("Couldn't reach the server — import not applied");
     } catch {
       toast("Invalid JSON file");
     }

@@ -988,6 +988,84 @@ def register_store_routes(
             200 if ok else 500
         )
 
+    # ── Shared storefront content (admin overrides for ALL visitors) ──────
+    # The admin's presentation edits (carousel slides, hidden locations,
+    # category tile art, local-only items) used to live in each browser's
+    # localStorage, so they only applied to the browser that made them. They
+    # are stored here on the wrapper instead: the admin PUTs the overlay and
+    # every storefront GETs it at boot, so one admin edit is what every
+    # visitor sees. localStorage remains a warm-start cache only.
+    _CONTENT_KEYS = ("categories", "products", "stores", "slides")
+
+    def _content_path() -> str:
+        return config.get("content_path") or ""
+
+    def _load_content() -> dict[str, Any]:
+        path = _content_path()
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                if isinstance(data, dict):
+                    return data
+            except (OSError, ValueError) as exc:  # pragma: no cover
+                log.warning("store content read failed: %s", exc)
+        return {}
+
+    def _save_content(data: dict[str, Any]) -> bool:
+        path = _content_path()
+        if not path:
+            return False
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            return True
+        except OSError as exc:  # pragma: no cover
+            log.warning("store content write failed: %s", exc)
+            return False
+
+    @app.get("/api/store/content")
+    def store_content_get():
+        return jsonify({"ok": True, "content": _load_content()})
+
+    @app.put("/api/store/content")
+    def store_content_put():
+        """Merge the posted sections into the stored overlay. Only the four
+        known collections are accepted; a key sent as null clears that
+        section (falls back to the live Counterpoint data)."""
+        body = request.get_json(silent=True) or {}
+        current = _load_content()
+        touched = False
+        for key in _CONTENT_KEYS:
+            if key not in body:
+                continue
+            val = body[key]
+            if val is None:
+                current.pop(key, None)
+                touched = True
+            elif isinstance(val, list):
+                current[key] = val
+                touched = True
+        if not touched:
+            return jsonify({"ok": False, "message": "No content sections in body."}), 400
+        from datetime import datetime, timezone
+        current["updatedAt"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ok = _save_content(current)
+        return jsonify({"ok": ok}), (200 if ok else 500)
+
+    @app.delete("/api/store/content")
+    def store_content_reset():
+        """Drop every admin override - all storefronts fall back to the live
+        Counterpoint catalog (the admin's 'Reset to defaults')."""
+        path = _content_path()
+        try:
+            if path and os.path.isfile(path):
+                os.remove(path)
+            return jsonify({"ok": True})
+        except OSError as exc:  # pragma: no cover
+            log.warning("store content reset failed: %s", exc)
+            return jsonify({"ok": False, "message": str(exc)}), 500
+
     # ── Item writeback -> Counterpoint (shared fields only) ───────────────
     # NCR's API is read-only for items, so this writes the shared columns
     # (description, category, price, unit) straight to IM_ITEM. It bypasses CP

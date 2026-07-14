@@ -90,12 +90,17 @@ CNTRPORT_AUTH_EXEMPT_PREFIXES = tuple(
     if p.strip()
 )
 
-# The Twilio inbound webhook (STOP/ARRET replies) can never carry our API key
-# header - Twilio doesn't send custom headers. It is exempted from the key gate
-# unconditionally and authenticated by its X-Twilio-Signature instead
-# (validated in sms_api.py), so it stays safe even when someone trims the
-# CNTRPORT_AUTH_EXEMPT_* env vars.
-SMS_INBOUND_WEBHOOK_PATH = "/api/store/sms/inbound"
+# Paths that carry their OWN authentication and can never send our API key
+# header, exempted from the key gate unconditionally (safe even when someone
+# trims the CNTRPORT_AUTH_EXEMPT_* env vars):
+#   * the Twilio inbound webhook - authenticated by X-Twilio-Signature
+#     (validated in sms_api.py); Twilio can't send custom headers.
+#   * the email unsubscribe link - authenticated by its per-address HMAC
+#     token; recipients click it straight from their mail client.
+SELF_AUTHENTICATED_PATHS = (
+    "/api/store/sms/inbound",
+    "/api/store/email/unsubscribe",
+)
 
 CP_SQL_SERVER      = _env("CP_SQL_SERVER", ".")
 CP_SQL_DATABASE    = _env("CP_SQL_DATABASE")
@@ -134,6 +139,14 @@ if not CP_ITEM_PLACEHOLDER_DIR and CP_ITEM_IMAGE_DIR:
 CP_PAYMENTS_CONFIG_PATH = _env(
     "CP_PAYMENTS_CONFIG_PATH",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "payments.json"),
+)
+
+# Where the admin's shared storefront content overlay lives (carousel slides,
+# hidden locations, category tile art, ...). Served to EVERY storefront visitor
+# at boot so admin edits aren't trapped in one browser's localStorage.
+CP_STORE_CONTENT_PATH = _env(
+    "CP_STORE_CONTENT_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "store_content.json"),
 )
 
 # Admin edits to shared item fields (description, category, price, unit) are
@@ -176,6 +189,13 @@ TWILIO_ACCOUNT_SID           = _env("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN            = _env("TWILIO_AUTH_TOKEN")
 TWILIO_FROM_NUMBER           = _env("TWILIO_FROM_NUMBER")            # E.164, e.g. +19025550123
 TWILIO_MESSAGING_SERVICE_SID = _env("TWILIO_MESSAGING_SERVICE_SID")  # optional, overrides From
+# Email channel via Twilio SendGrid: marketing campaigns + email receipts.
+# EMAIL_FROM must be a sender address verified in the SendGrid account.
+TWILIO_SENDGRID_API_KEY = _env("TWILIO_SENDGRID_API_KEY") or _env("SENDGRID_API_KEY")
+EMAIL_FROM              = _env("EMAIL_FROM")
+# Postal address shown in the CASL footer of every marketing email (CASL
+# requires the sender's mailing address in a CEM).
+EMAIL_MAILING_ADDRESS   = _env("EMAIL_MAILING_ADDRESS")
 # CASL proof-of-consent ledger (who opted in, when, with what wording) plus the
 # campaign send log. JSON on the server, git-ignored like payments.json.
 SMS_CONSENT_PATH = _env(
@@ -224,8 +244,8 @@ def _require_wrapper_api_key():
         return None
     if request.path.startswith(CNTRPORT_AUTH_EXEMPT_PREFIXES):
         return None
-    if request.path == SMS_INBOUND_WEBHOOK_PATH:
-        # Twilio-signed webhook; sms_api.py validates X-Twilio-Signature.
+    if request.path in SELF_AUTHENTICATED_PATHS:
+        # Twilio-signed webhook / HMAC-tokened unsubscribe link (sms_api.py).
         return None
     supplied = request.headers.get(CNTRPORT_API_KEY_HEADER, "")
     if not supplied or not secrets.compare_digest(supplied, CNTRPORT_API_KEY):
@@ -1025,6 +1045,7 @@ store_api.register_store_routes(
         "item_image_dir": CP_ITEM_IMAGE_DIR,
         "item_placeholder_dir": CP_ITEM_PLACEHOLDER_DIR,
         "payments_config_path": CP_PAYMENTS_CONFIG_PATH,
+        "content_path": CP_STORE_CONTENT_PATH,
         "allow_item_write": CP_ALLOW_ITEM_WRITE,
         "doc_str_id": STORE_DOC_STR_ID,
         "doc_sta_id": STORE_DOC_STA_ID,
@@ -1045,6 +1066,9 @@ sms_api.register_sms_routes(
         "auth_token": TWILIO_AUTH_TOKEN,
         "from_number": TWILIO_FROM_NUMBER,
         "messaging_service_sid": TWILIO_MESSAGING_SERVICE_SID,
+        "sendgrid_api_key": TWILIO_SENDGRID_API_KEY,
+        "email_from": EMAIL_FROM,
+        "mailing_address": EMAIL_MAILING_ADDRESS,
         "consent_path": SMS_CONSENT_PATH,
         "quiet_start": SMS_QUIET_START,
         "quiet_end": SMS_QUIET_END,

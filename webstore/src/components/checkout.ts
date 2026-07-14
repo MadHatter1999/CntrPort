@@ -2,7 +2,14 @@ import { state, setCheckoutOpen, clearCart } from "../state/store";
 import { getProducts, getVisibleStores, getConfig } from "../data/cms";
 import { postOrder, confirmPromotions } from "../data/api";
 import { fetchPaymentStatus, providerLabel, type PaymentStatus } from "../data/payments";
-import { fetchSmsStatus, sendSmsReceipt, smsSubscribe, type SmsStatus } from "../data/sms";
+import {
+  fetchSmsStatus,
+  sendSmsReceipt,
+  smsSubscribe,
+  sendEmailReceipt,
+  emailSubscribe,
+  type SmsStatus,
+} from "../data/sms";
 import { t } from "../i18n";
 import { money } from "../lib/format";
 import { esc, $ } from "../lib/dom";
@@ -28,8 +35,16 @@ let fulfillment: Fulfillment = "pickup";
 // demo and is refreshed (secret-free) each time checkout opens.
 let payStatus: PaymentStatus = { mode: "demo", provider: "", environment: "", publicConfig: {} };
 
-// Whether the server has Twilio configured - decides if the text opt-ins show.
-let smsStatus: SmsStatus = { enabled: false, fromNumber: "", quietStart: 9, quietEnd: 21 };
+// Whether the server has Twilio SMS / SendGrid email configured - decides
+// which receipt/marketing opt-ins the form shows.
+let smsStatus: SmsStatus = {
+  enabled: false,
+  fromNumber: "",
+  emailEnabled: false,
+  emailFrom: "",
+  quietStart: 9,
+  quietEnd: 21,
+};
 // Outcome of the receipt text for the confirmation screen ("" = not requested).
 let receiptTextState: "" | "pending" | "sent" | "failed" = "";
 
@@ -231,21 +246,33 @@ function formHTML(): string {
       </section>
 
       ${
-        smsStatus.enabled
+        smsStatus.enabled || smsStatus.emailEnabled
           ? /* html */ `
       <section class="co__sec">
         <h3>${icon("phone", 18)} ${esc(t("checkout.texts"))}</h3>
-        <label class="co-check">
+        ${
+          smsStatus.enabled
+            ? `<label class="co-check">
           <input type="checkbox" data-co-field="smsReceipt" />
           <span>${esc(t("checkout.smsReceipt"))}</span>
         </label>
         <!-- CASL: express consent must be an unchecked, optional opt-in with
              the sender named; the exact wording is stored server-side as the
-             proof-of-consent record. -->
+             proof-of-consent record. Same for the email opt-in below. -->
         <label class="co-check">
           <input type="checkbox" data-co-field="smsMarketing" />
           <span>${esc(t("checkout.smsMarketing", { store: getConfig().name }))}</span>
-        </label>
+        </label>`
+            : ""
+        }
+        ${
+          smsStatus.emailEnabled
+            ? `<label class="co-check">
+          <input type="checkbox" data-co-field="emailMarketing" />
+          <span>${esc(t("checkout.emailMarketing", { store: getConfig().name }))}</span>
+        </label>`
+            : ""
+        }
         <p class="co__fine">${esc(t("checkout.smsFine"))}</p>
       </section>`
           : ""
@@ -439,6 +466,8 @@ function placeOrder(form: HTMLFormElement): void {
   // Text messaging (only offered when the server has Twilio configured).
   const wantsReceipt = (field(form, "smsReceipt") as HTMLInputElement | null)?.checked ?? false;
   const wantsMarketing = (field(form, "smsMarketing") as HTMLInputElement | null)?.checked ?? false;
+  const wantsEmailMarketing =
+    (field(form, "emailMarketing") as HTMLInputElement | null)?.checked ?? false;
   if (smsStatus.enabled && wantsReceipt) {
     receiptTextState = "pending";
     void sendSmsReceipt(order).then((r) => {
@@ -447,6 +476,11 @@ function placeOrder(form: HTMLFormElement): void {
       if (placed === order) renderCheckout();
     });
   }
+  // Email receipt is transactional: sent automatically when email is
+  // configured (the confirmation screen already tells the shopper it's coming).
+  if (smsStatus.emailEnabled && order.customer.email) {
+    void sendEmailReceipt(order);
+  }
   if (smsStatus.enabled && wantsMarketing) {
     // CASL: store the exact wording the shopper agreed to with the consent.
     void smsSubscribe({
@@ -454,6 +488,15 @@ function placeOrder(form: HTMLFormElement): void {
       name: order.customer.name,
       consentText:
         t("checkout.smsMarketing", { store: getConfig().name }) + " " + t("checkout.smsFine"),
+      source: "checkout",
+    });
+  }
+  if (smsStatus.emailEnabled && wantsEmailMarketing) {
+    void emailSubscribe({
+      email: order.customer.email,
+      name: order.customer.name,
+      consentText:
+        t("checkout.emailMarketing", { store: getConfig().name }) + " " + t("checkout.smsFine"),
       source: "checkout",
     });
   }
