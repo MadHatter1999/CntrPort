@@ -306,6 +306,18 @@ def register_store_routes(
                 else:
                     sel.append("CAST(NULL AS decimal(15,4)) AS promo_prc")
 
+                # Native promotional pricing (IM_PRC_GRP GRP_TYP='P' price
+                # rules) - where this install's promos actually live. Priced
+                # at qty 1 for the listing; the lowest of this and the
+                # planned-promo price wins below.
+                if all(_table_exists(cur, t) for t in _NATIVE_PROMO_TABLES):
+                    sel.append(
+                        _native_promo_subquery(f"i.{price_col}", "i.ITEM_NO", "1")
+                        + " AS rule_promo_prc"
+                    )
+                else:
+                    sel.append("CAST(NULL AS decimal(15,4)) AS rule_promo_prc")
+
                 where = ["1=1"]
                 tail_params: list[Any] = []
                 if stat_col:
@@ -337,10 +349,18 @@ def register_store_routes(
                         "unit": unit,
                         "image": f"/api/store/item-image/{item_no}",
                     }
-                    # Active promo beats the regular price -> show sale + struck-out was.
-                    promo_raw = jsonable(getattr(r, "promo_prc", None))
-                    if promo_raw is not None:
-                        promo = float(promo_raw)
+                    # Active promo beats the regular price -> show sale + struck-out
+                    # was. Lowest across both promo sources wins.
+                    promo_candidates = [
+                        float(v)
+                        for v in (
+                            jsonable(getattr(r, "promo_prc", None)),
+                            jsonable(getattr(r, "rule_promo_prc", None)),
+                        )
+                        if v is not None
+                    ]
+                    if promo_candidates:
+                        promo = min(promo_candidates)
                         if 0 < promo < reg:
                             rec["price"] = promo
                             rec["wasPrice"] = reg
@@ -351,31 +371,95 @@ def register_store_routes(
             log.info("store_products failed: %s", exc)
             return jsonify([])
 
-    # ── Planned promotions (confirmed at checkout) ────────────────────────
-    def _active_promo_price(cur, item_no: str) -> float | None:
-        """Lowest planned-promo price active TODAY for this item at the order's
-        store, or None. Same rule the product list uses (IM_PLAN_PROMO_RUL gated
-        by the group's date window + store), but resolved per item at order time
-        so it reflects the current promo, not a stale page-load price."""
-        if not (_table_exists(cur, "IM_PLAN_PROMO_RUL") and _table_exists(cur, "IM_PLAN_PROMO_GRP")):
-            return None
-        promo_str = str(config.get("doc_str_id") or config.get("promo_str_id") or "").strip()
-        sql = (
-            "SELECT MIN(r.PROMO_PRC) FROM IM_PLAN_PROMO_RUL r "
-            "JOIN IM_PLAN_PROMO_GRP g ON g.GRP_COD = r.GRP_COD "
-            "WHERE r.ITEM_NO = ? "
-            "AND CAST(GETDATE() AS date) BETWEEN CAST(g.BEG_DAT AS date) AND CAST(g.END_DAT AS date)"
+    # ── Promotions (confirmed at checkout) ────────────────────────────────
+    # Counterpoint stores promotional prices in TWO places, so both are read
+    # and the lowest active price wins:
+    #   1. IM_PRC_GRP/IM_PRC_RUL/IM_PRC_RUL_BRK with GRP_TYP='P' - the native
+    #      "Promotional Pricing" groups (what THIS install uses: WINTER SAL,
+    #      FALL 2025, ...). A break of PRC_METH 'F' is a fixed sale price;
+    #      'D' is a percent off the regular price. MIN_QTY on the break is a
+    #      quantity break (e.g. 2+ at 50% off) - honoured via the qty arg.
+    #      Customer-filtered groups/rules are skipped: the web store prices
+    #      for the anonymous guest, never a contract customer.
+    #   2. IM_PLAN_PROMO_RUL/GRP - the Planned Promotions module (empty on
+    #      this install; kept for installs that use it).
+    _NATIVE_PROMO_TABLES = ("IM_PRC_GRP", "IM_PRC_RUL", "IM_PRC_RUL_BRK")
+
+    # Shared SQL fragments so the listing and checkout paths can never drift.
+    _PROMO_GRP_ACTIVE = (
+        "(g.ENABLED IS NULL OR g.ENABLED <> 'N') "
+        "AND (g.NO_BEG_DAT = 'Y' OR g.BEG_DAT IS NULL OR CAST(g.BEG_DAT AS date) <= CAST(GETDATE() AS date)) "
+        "AND (g.NO_END_DAT = 'Y' OR g.END_DAT IS NULL OR CAST(g.END_DAT AS date) >= CAST(GETDATE() AS date)) "
+        "AND (g.CUST_NO IS NULL OR g.CUST_NO = '') "
+        "AND (g.CUST_FILT IS NULL OR DATALENGTH(g.CUST_FILT) = 0)"
+    )
+    _PROMO_RUL_GUEST = (
+        "(r.CUST_NO IS NULL OR r.CUST_NO = '') "
+        "AND (r.CUST_FILT IS NULL OR DATALENGTH(r.CUST_FILT) = 0)"
+    )
+
+    def _native_promo_subquery(price_expr: str, item_expr: str, qty_expr: str) -> str:
+        """MIN() promo-price subquery over the native GRP_TYP='P' price rules.
+        `price_expr` is the regular-price SQL the 'D' (percent-off) method
+        discounts from; `item_expr`/`qty_expr` are SQL for the target item/qty."""
+        return (
+            "(SELECT MIN(CASE b.PRC_METH "
+            "WHEN 'F' THEN b.AMT_OR_PCT "
+            f"WHEN 'D' THEN {price_expr} * (1 - b.AMT_OR_PCT / 100.0) END) "
+            "FROM IM_PRC_RUL r "
+            "JOIN IM_PRC_RUL_BRK b ON b.GRP_TYP = r.GRP_TYP AND b.GRP_COD = r.GRP_COD "
+            "AND b.RUL_SEQ_NO = r.RUL_SEQ_NO "
+            "JOIN IM_PRC_GRP g ON g.GRP_TYP = r.GRP_TYP AND g.GRP_COD = r.GRP_COD "
+            f"WHERE r.GRP_TYP = 'P' AND r.ITEM_NO = {item_expr} "
+            f"AND b.PRC_METH IN ('F', 'D') AND b.MIN_QTY <= {qty_expr} "
+            f"AND {_PROMO_RUL_GUEST} AND {_PROMO_GRP_ACTIVE})"
         )
-        params: list[Any] = [item_no]
-        if promo_str:
-            sql += " AND (g.STR_ID = ? OR g.STR_ID IS NULL OR g.STR_ID = '')"
-            params.append(promo_str)
-        try:
-            cur.execute(sql, params)
-            row = cur.fetchone()
-            return float(row[0]) if row and row[0] is not None else None
-        except Exception:  # pragma: no cover
-            return None
+
+    def _active_promo_price(cur, item_no: str, qty: float = 1.0) -> float | None:
+        """Lowest promotional price active TODAY for this item (and quantity),
+        or None. Resolved per item at order time so it reflects the current
+        promo, not a stale page-load price."""
+        candidates: list[float] = []
+
+        # 1) Native promotional pricing (GRP_TYP='P' price rules).
+        if all(_table_exists(cur, t) for t in _NATIVE_PROMO_TABLES):
+            cols = get_existing_columns("IM_ITEM")
+            price_col = next((c for c in ("PRC_1", "REG_PRC", "PRC_2") if c in cols), "PRC_1")
+            try:
+                cur.execute(
+                    "SELECT "
+                    + _native_promo_subquery(f"i.{price_col}", "i.ITEM_NO", "?")
+                    + " FROM IM_ITEM i WHERE i.ITEM_NO = ?",
+                    float(qty), item_no,
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    candidates.append(float(row[0]))
+            except Exception as exc:  # pragma: no cover
+                log.info("native promo lookup failed for %s: %s", item_no, exc)
+
+        # 2) Planned Promotions module.
+        if _table_exists(cur, "IM_PLAN_PROMO_RUL") and _table_exists(cur, "IM_PLAN_PROMO_GRP"):
+            promo_str = str(config.get("doc_str_id") or config.get("promo_str_id") or "").strip()
+            sql = (
+                "SELECT MIN(r.PROMO_PRC) FROM IM_PLAN_PROMO_RUL r "
+                "JOIN IM_PLAN_PROMO_GRP g ON g.GRP_COD = r.GRP_COD "
+                "WHERE r.ITEM_NO = ? "
+                "AND CAST(GETDATE() AS date) BETWEEN CAST(g.BEG_DAT AS date) AND CAST(g.END_DAT AS date)"
+            )
+            params: list[Any] = [item_no]
+            if promo_str:
+                sql += " AND (g.STR_ID = ? OR g.STR_ID IS NULL OR g.STR_ID = '')"
+                params.append(promo_str)
+            try:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    candidates.append(float(row[0]))
+            except Exception:  # pragma: no cover
+                pass
+
+        return min(candidates) if candidates else None
 
     @app.post("/api/store/promotions/confirm")
     def store_promotions_confirm():
@@ -402,7 +486,9 @@ def register_store_routes(
                     cur.execute(f"SELECT TOP (1) {price_col} FROM IM_ITEM WHERE ITEM_NO = ?", item_no)
                     row = cur.fetchone()
                     reg = float(row[0]) if row and row[0] is not None else float(it.get("price") or 0)
-                    promo = _active_promo_price(cur, item_no)
+                    # qty matters: quantity-break promos (e.g. 2+ at 50% off)
+                    # only kick in once the cart holds enough units.
+                    promo = _active_promo_price(cur, item_no, qty)
                     on_promo = promo is not None and promo < reg
                     applied = promo if on_promo else reg
                     # Required kit-component deposit(s) per unit (e.g. bottle
@@ -588,7 +674,7 @@ def register_store_routes(
             with get_sql_connection() as _cn:
                 _cur = _cn.cursor()
                 for item_no, qty, client_price in clean:
-                    promo = _active_promo_price(_cur, item_no)
+                    promo = _active_promo_price(_cur, item_no, qty)
                     if promo is not None and (client_price is None or promo < client_price):
                         price = promo
                     else:
