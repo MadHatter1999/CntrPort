@@ -312,7 +312,7 @@ def register_store_routes(
                 # planned-promo price wins below.
                 if all(_table_exists(cur, t) for t in _NATIVE_PROMO_TABLES):
                     sel.append(
-                        _native_promo_subquery(f"i.{price_col}", "i.ITEM_NO", "1")
+                        _native_promo_subquery(price_col, "i.ITEM_NO", "1")
                         + " AS rule_promo_prc"
                     )
                 else:
@@ -398,18 +398,23 @@ def register_store_routes(
         "AND (r.CUST_FILT IS NULL OR DATALENGTH(r.CUST_FILT) = 0)"
     )
 
-    def _native_promo_subquery(price_expr: str, item_expr: str, qty_expr: str) -> str:
+    def _native_promo_subquery(price_col: str, item_expr: str, qty_expr: str) -> str:
         """MIN() promo-price subquery over the native GRP_TYP='P' price rules.
-        `price_expr` is the regular-price SQL the 'D' (percent-off) method
-        discounts from; `item_expr`/`qty_expr` are SQL for the target item/qty."""
+        `price_col` is the IM_ITEM regular-price column the 'D' (percent-off)
+        method discounts from; `item_expr`/`qty_expr` are SQL for the target
+        item/qty. The item's price is read via an INNER join (ii) rather than
+        an outer reference: SQL Server rejects an aggregate that mixes an outer
+        column with local ones (error 8124), which silently killed every promo
+        lookup this subquery served."""
         return (
             "(SELECT MIN(CASE b.PRC_METH "
             "WHEN 'F' THEN b.AMT_OR_PCT "
-            f"WHEN 'D' THEN {price_expr} * (1 - b.AMT_OR_PCT / 100.0) END) "
+            f"WHEN 'D' THEN ii.{price_col} * (1 - b.AMT_OR_PCT / 100.0) END) "
             "FROM IM_PRC_RUL r "
             "JOIN IM_PRC_RUL_BRK b ON b.GRP_TYP = r.GRP_TYP AND b.GRP_COD = r.GRP_COD "
             "AND b.RUL_SEQ_NO = r.RUL_SEQ_NO "
             "JOIN IM_PRC_GRP g ON g.GRP_TYP = r.GRP_TYP AND g.GRP_COD = r.GRP_COD "
+            "JOIN IM_ITEM ii ON ii.ITEM_NO = r.ITEM_NO "
             f"WHERE r.GRP_TYP = 'P' AND r.ITEM_NO = {item_expr} "
             f"AND b.PRC_METH IN ('F', 'D') AND b.MIN_QTY <= {qty_expr} "
             f"AND {_PROMO_RUL_GUEST} AND {_PROMO_GRP_ACTIVE})"
@@ -428,7 +433,7 @@ def register_store_routes(
             try:
                 cur.execute(
                     "SELECT "
-                    + _native_promo_subquery(f"i.{price_col}", "i.ITEM_NO", "?")
+                    + _native_promo_subquery(price_col, "i.ITEM_NO", "?")
                     + " FROM IM_ITEM i WHERE i.ITEM_NO = ?",
                     float(qty), item_no,
                 )
